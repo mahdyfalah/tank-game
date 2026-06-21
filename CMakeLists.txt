@@ -88,7 +88,11 @@ find_program(SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/bin REQUIRED)
 # ---------------------------------------------------------------------------
 set(APP_OUTPUT_DIR ${CMAKE_BINARY_DIR}/${PROJECT_NAME})
 
-add_executable (${PROJECT_NAME} src/main.cpp)
+add_executable (${PROJECT_NAME}
+  src/main.cpp
+  src/ground_tile_map.cpp
+  src/camera.cpp
+  src/render/swapchain_bundle.cpp)
 set_target_properties (${PROJECT_NAME} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${APP_OUTPUT_DIR}
   CXX_STANDARD 20
@@ -136,5 +140,5 @@ add_dependencies(${PROJECT_NAME} ${SHADER_TARGET})
 # ---------------------------------------------------------------------------
 # Assets: copy the texture next to the executable's working directory.
 # ---------------------------------------------------------------------------
-file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/assets/textures/texture.jpg"
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/assets/textures/grass.jpg"
      DESTINATION ${APP_OUTPUT_DIR}/textures)

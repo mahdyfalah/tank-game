@@ -86,16 +86,16 @@ tank-game/
 │  └─ main.cpp           # the whole renderer (single file for now)
 ├─ shaders/
 │  └─ shader.slang       # Slang vertex + fragment shaders -> compiled to slang.spv
-├─ assets/
+└─ assets/
 │  └─ textures/
-│     └─ texture.jpg     # the sample texture
+│     └─ grass.jpg       # the sample texture
 └─ scripts/
    ├─ build_windows.ps1
    ├─ build_unix.sh
    └─ install_dependencies_windows.bat
 ```
 
-At runtime the executable expects `shaders/slang.spv` and `textures/texture.jpg`
+At runtime the executable expects `shaders/slang.spv` and `textures/grass.jpg`
 **relative to its working directory**. CMake puts both in `build/TankGame/`, and the
 build scripts run the game from there.
 

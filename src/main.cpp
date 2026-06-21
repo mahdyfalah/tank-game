@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <array>
 #include <assert.h>
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -25,6 +24,10 @@ import vulkan_hpp;
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+
+#include "camera.h"
+#include "ground_tile_map.h"
+#include "render/swapchain_bundle.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -68,20 +71,33 @@ struct UniformBufferObject
 	glm::mat4 proj;
 };
 
-const std::vector<Vertex> vertices = {
-    {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-    {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-    {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-    {{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+static std::vector<Vertex> buildVerticesFromGroundMesh(const GroundMeshData &meshData)
+{
+	std::vector<Vertex> vertices;
+	vertices.reserve(meshData.positions.size());
 
-    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-    {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-    {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}};
+	for (size_t i = 0; i < meshData.positions.size(); ++i)
+	{
+		vertices.push_back({meshData.positions[i], {1.0f, 1.0f, 1.0f}, meshData.texCoords[i]});
+	}
 
-const std::vector<uint16_t> indices = {
-    0, 1, 2, 2, 3, 0,
-    4, 5, 6, 6, 7, 4};
+	return vertices;
+}
+
+constexpr uint32_t MAP_TILES_PER_SIDE = 10;
+constexpr float    MAP_TILE_SIZE      = 1.0f;
+constexpr float    MAP_UV_PER_TILE    = 1.0f;
+
+constexpr glm::vec3 CAMERA_POSITION = {0.0f, -8.0f, 8.0f};
+constexpr glm::vec3 CAMERA_TARGET   = {0.0f, 0.0f, 0.0f};
+constexpr glm::vec3 CAMERA_UP       = {0.0f, 0.0f, 1.0f};
+
+const GroundTileMap groundTileMap(MAP_TILES_PER_SIDE, MAP_TILE_SIZE, MAP_UV_PER_TILE);
+const GroundMeshData &groundMesh = groundTileMap.getMeshData();
+const auto            vertices   = buildVerticesFromGroundMesh(groundMesh);
+const auto           &indices    = groundMesh.indices;
+
+const Camera mainCamera(CAMERA_POSITION, CAMERA_TARGET, CAMERA_UP, 45.0f, 0.1f, 100.0f);
 
 class HelloTriangleApplication
 {
@@ -104,19 +120,11 @@ class HelloTriangleApplication
 	vk::raii::Device                 device         = nullptr;
 	uint32_t                         queueIndex     = ~0;
 	vk::raii::Queue                  queue          = nullptr;
-	vk::raii::SwapchainKHR           swapChain      = nullptr;
-	std::vector<vk::Image>           swapChainImages;
-	vk::SurfaceFormatKHR             swapChainSurfaceFormat;
-	vk::Extent2D                     swapChainExtent;
-	std::vector<vk::raii::ImageView> swapChainImageViews;
+	std::unique_ptr<SwapchainBundle> swapchainBundle;
 
 	vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
 	vk::raii::PipelineLayout      pipelineLayout      = nullptr;
 	vk::raii::Pipeline            graphicsPipeline    = nullptr;
-
-	vk::raii::Image        depthImage       = nullptr;
-	vk::raii::DeviceMemory depthImageMemory = nullptr;
-	vk::raii::ImageView    depthImageView   = nullptr;
 
 	vk::raii::Image        textureImage       = nullptr;
 	vk::raii::DeviceMemory textureImageMemory = nullptr;
@@ -175,12 +183,11 @@ class HelloTriangleApplication
 		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
-		createSwapChain();
-		createImageViews();
+		swapchainBundle = std::make_unique<SwapchainBundle>(physicalDevice, device, surface, window);
+		swapchainBundle->create();
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
 		createCommandPool();
-		createDepthResources();
 		createTextureImage();
 		createTextureImageView();
 		createTextureSampler();
@@ -204,12 +211,6 @@ class HelloTriangleApplication
 		device.waitIdle();
 	}
 
-	void cleanupSwapChain()
-	{
-		swapChainImageViews.clear();
-		swapChain = nullptr;
-	}
-
 	void cleanup()
 	{
 		glfwDestroyWindow(window);
@@ -227,11 +228,7 @@ class HelloTriangleApplication
 		}
 
 		device.waitIdle();
-
-		cleanupSwapChain();
-		createSwapChain();
-		createImageViews();
-		createDepthResources();
+		swapchainBundle->recreate();
 	}
 
 	void createInstance()
@@ -391,46 +388,6 @@ class HelloTriangleApplication
 		queue  = vk::raii::Queue(device, queueIndex, 0);
 	}
 
-	void createSwapChain()
-	{
-		vk::SurfaceCapabilitiesKHR surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(*surface);
-		swapChainExtent                                = chooseSwapExtent(surfaceCapabilities);
-		uint32_t minImageCount                         = chooseSwapMinImageCount(surfaceCapabilities);
-
-		std::vector<vk::SurfaceFormatKHR> availableFormats = physicalDevice.getSurfaceFormatsKHR(*surface);
-		swapChainSurfaceFormat                             = chooseSwapSurfaceFormat(availableFormats);
-
-		std::vector<vk::PresentModeKHR> availablePresentModes = physicalDevice.getSurfacePresentModesKHR(*surface);
-		vk::PresentModeKHR              presentMode           = chooseSwapPresentMode(availablePresentModes);
-
-		vk::SwapchainCreateInfoKHR swapChainCreateInfo{.surface          = *surface,
-		                                               .minImageCount    = minImageCount,
-		                                               .imageFormat      = swapChainSurfaceFormat.format,
-		                                               .imageColorSpace  = swapChainSurfaceFormat.colorSpace,
-		                                               .imageExtent      = swapChainExtent,
-		                                               .imageArrayLayers = 1,
-		                                               .imageUsage       = vk::ImageUsageFlagBits::eColorAttachment,
-		                                               .imageSharingMode = vk::SharingMode::eExclusive,
-		                                               .preTransform     = surfaceCapabilities.currentTransform,
-		                                               .compositeAlpha   = vk::CompositeAlphaFlagBitsKHR::eOpaque,
-		                                               .presentMode      = presentMode,
-		                                               .clipped          = true};
-
-		swapChain       = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
-		swapChainImages = swapChain.getImages();
-	}
-
-	void createImageViews()
-	{
-		assert(swapChainImageViews.empty());
-
-		swapChainImageViews.reserve(swapChainImages.size());
-		for (auto &image : swapChainImages)
-		{
-			swapChainImageViews.emplace_back(createImageView(image, swapChainSurfaceFormat.format, vk::ImageAspectFlagBits::eColor));
-		}
-	}
-
 	void createDescriptorSetLayout()
 	{
 		std::array<vk::DescriptorSetLayoutBinding, 2> bindings{
@@ -461,7 +418,7 @@ class HelloTriangleApplication
 		vk::PipelineRasterizationStateCreateInfo rasterizer{.depthClampEnable        = vk::False,
 		                                                    .rasterizerDiscardEnable = vk::False,
 		                                                    .polygonMode             = vk::PolygonMode::eFill,
-		                                                    .cullMode                = vk::CullModeFlagBits::eBack,
+		                                                    .cullMode                = vk::CullModeFlagBits::eNone,
 		                                                    .frontFace               = vk::FrontFace::eCounterClockwise,
 		                                                    .depthBiasEnable         = vk::False,
 		                                                    .lineWidth               = 1.0f};
@@ -487,8 +444,9 @@ class HelloTriangleApplication
 		vk::PipelineLayoutCreateInfo pipelineLayoutInfo{.setLayoutCount = 1, .pSetLayouts = &*descriptorSetLayout, .pushConstantRangeCount = 0};
 		pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
-		vk::Format depthFormat = findDepthFormat();
+		vk::Format depthFormat = swapchainBundle->getDepthFormat();
 
+		const vk::SurfaceFormatKHR &surfaceFormat = swapchainBundle->getSurfaceFormat();
 		vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo> pipelineCreateInfoChain = {
 		    {.stageCount          = 2,
 		     .pStages             = shaderStages,
@@ -502,7 +460,7 @@ class HelloTriangleApplication
 		     .pDynamicState       = &dynamicState,
 		     .layout              = pipelineLayout,
 		     .renderPass          = nullptr},
-		    {.colorAttachmentCount = 1, .pColorAttachmentFormats = &swapChainSurfaceFormat.format, .depthAttachmentFormat = depthFormat}};
+		    {.colorAttachmentCount = 1, .pColorAttachmentFormats = &surfaceFormat.format, .depthAttachmentFormat = depthFormat}};
 
 		graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
 	}
@@ -514,40 +472,10 @@ class HelloTriangleApplication
 		commandPool = vk::raii::CommandPool(device, poolInfo);
 	}
 
-	void createDepthResources()
-	{
-		vk::Format depthFormat = findDepthFormat();
-
-		std::tie(depthImage, depthImageMemory) = createImage(swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal);
-		depthImageView                         = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
-	}
-
-	vk::Format findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features)
-	{
-		for (const auto format : candidates)
-		{
-			vk::FormatProperties props = physicalDevice.getFormatProperties(format);
-			if (((tiling == vk::ImageTiling::eLinear) && ((props.linearTilingFeatures & features) == features)) ||
-			    ((tiling == vk::ImageTiling::eOptimal) && ((props.optimalTilingFeatures & features) == features)))
-			{
-				return format;
-			}
-		}
-
-		throw std::runtime_error("failed to find supported format!");
-	}
-
-	vk::Format findDepthFormat()
-	{
-		return findSupportedFormat({vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint},
-		                           vk::ImageTiling::eOptimal,
-		                           vk::FormatFeatureFlagBits::eDepthStencilAttachment);
-	}
-
 	void createTextureImage()
 	{
 		int            texWidth, texHeight, texChannels;
-		stbi_uc       *pixels    = stbi_load(resolveResourcePath("textures/texture.jpg").c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+		stbi_uc       *pixels    = stbi_load(resolveResourcePath("textures/grass.jpg").c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 		vk::DeviceSize imageSize = texWidth * texHeight * 4;
 
 		if (!pixels)
@@ -836,7 +764,7 @@ class HelloTriangleApplication
 
 		// Before starting rendering, transition the swapchain image to vk::ImageLayout::eColorAttachmentOptimal
 		transition_image_layout(
-		    swapChainImages[imageIndex],
+		    swapchainBundle->getImages()[imageIndex],
 		    vk::ImageLayout::eUndefined,
 		    vk::ImageLayout::eColorAttachmentOptimal,
 		    {},                                                        // srcAccessMask (no need to wait for previous operations)
@@ -847,7 +775,7 @@ class HelloTriangleApplication
 
 		// Transition depth image to depth attachment optimal layout
 		transition_image_layout(
-		    *depthImage,
+		    *swapchainBundle->getDepthImage(),
 		    vk::ImageLayout::eUndefined,
 		    vk::ImageLayout::eDepthAttachmentOptimal,
 		    vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
@@ -860,21 +788,23 @@ class HelloTriangleApplication
 		vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
 
 		vk::RenderingAttachmentInfo colorAttachmentInfo = {
-		    .imageView   = swapChainImageViews[imageIndex],
+		    .imageView   = swapchainBundle->getImageViews()[imageIndex],
 		    .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
 		    .loadOp      = vk::AttachmentLoadOp::eClear,
 		    .storeOp     = vk::AttachmentStoreOp::eStore,
 		    .clearValue  = clearColor};
 
 		vk::RenderingAttachmentInfo depthAttachmentInfo = {
-		    .imageView   = depthImageView,
+		    .imageView   = swapchainBundle->getDepthImageView(),
 		    .imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
 		    .loadOp      = vk::AttachmentLoadOp::eClear,
 		    .storeOp     = vk::AttachmentStoreOp::eDontCare,
 		    .clearValue  = clearDepth};
 
+		const vk::Extent2D &swapchainExtent = swapchainBundle->getExtent();
+
 		vk::RenderingInfo renderingInfo = {
-		    .renderArea           = {.offset = {0, 0}, .extent = swapChainExtent},
+		    .renderArea           = {.offset = {0, 0}, .extent = swapchainExtent},
 		    .layerCount           = 1,
 		    .colorAttachmentCount = 1,
 		    .pColorAttachments    = &colorAttachmentInfo,
@@ -882,17 +812,17 @@ class HelloTriangleApplication
 
 		commandBuffer.beginRendering(renderingInfo);
 		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
-		commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
-		commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
+		commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapchainExtent.width), static_cast<float>(swapchainExtent.height), 0.0f, 1.0f));
+		commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchainExtent));
 		commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
-		commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexTypeValue<decltype(indices)::value_type>::value);
+		commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
 		commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *descriptorSets[frameIndex], nullptr);
 		commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 		commandBuffer.endRendering();
 
 		// After rendering, transition the swapchain image to vk::ImageLayout::ePresentSrcKHR
 		transition_image_layout(
-		    swapChainImages[imageIndex],
+		    swapchainBundle->getImages()[imageIndex],
 		    vk::ImageLayout::eColorAttachmentOptimal,
 		    vk::ImageLayout::ePresentSrcKHR,
 		    vk::AccessFlagBits2::eColorAttachmentWrite,                // srcAccessMask
@@ -940,7 +870,7 @@ class HelloTriangleApplication
 	{
 		assert(presentCompleteSemaphores.empty() && renderFinishedSemaphores.empty() && inFlightFences.empty());
 
-		for (size_t i = 0; i < swapChainImages.size(); i++)
+		for (size_t i = 0; i < swapchainBundle->getImages().size(); i++)
 		{
 			renderFinishedSemaphores.emplace_back(device, vk::SemaphoreCreateInfo());
 		}
@@ -954,16 +884,11 @@ class HelloTriangleApplication
 
 	void updateUniformBuffer(uint32_t currentImage)
 	{
-		static auto startTime = std::chrono::high_resolution_clock::now();
-
-		auto  currentTime = std::chrono::high_resolution_clock::now();
-		float time        = std::chrono::duration<float>(currentTime - startTime).count();
-
 		UniformBufferObject ubo{};
-		ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-		ubo.view  = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-		ubo.proj =
-		    glm::perspective(glm::radians(45.0f), static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height), 0.1f, 10.0f);
+		ubo.model = glm::mat4(1.0f);
+		ubo.view  = mainCamera.getViewMatrix();
+		const vk::Extent2D &swapchainExtent = swapchainBundle->getExtent();
+		ubo.proj = mainCamera.getProjectionMatrix(static_cast<float>(swapchainExtent.width) / static_cast<float>(swapchainExtent.height));
 		ubo.proj[1][1] *= -1;
 
 		memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
@@ -979,7 +904,7 @@ class HelloTriangleApplication
 			throw std::runtime_error("failed to wait for fence!");
 		}
 
-		auto [result, imageIndex] = swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
+		auto [result, imageIndex] = swapchainBundle->getSwapChain().acquireNextImage(UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
 
 		// Due to VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS being defined, eErrorOutOfDateKHR can be checked as a result
 		// here and does not need to be caught by an exception.
@@ -1016,7 +941,7 @@ class HelloTriangleApplication
 		const vk::PresentInfoKHR presentInfoKHR{.waitSemaphoreCount = 1,
 		                                        .pWaitSemaphores    = &*renderFinishedSemaphores[imageIndex],
 		                                        .swapchainCount     = 1,
-		                                        .pSwapchains        = &*swapChain,
+		                                        .pSwapchains        = &*swapchainBundle->getSwapChain(),
 		                                        .pImageIndices      = &imageIndex};
 		result = queue.presentKHR(presentInfoKHR);
 		// Due to VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS being defined, eErrorOutOfDateKHR can be checked as a result
@@ -1040,48 +965,6 @@ class HelloTriangleApplication
 		vk::raii::ShaderModule     shaderModule{device, createInfo};
 
 		return shaderModule;
-	}
-
-	static uint32_t chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const &surfaceCapabilities)
-	{
-		auto minImageCount = std::max(3u, surfaceCapabilities.minImageCount);
-		if ((0 < surfaceCapabilities.maxImageCount) && (surfaceCapabilities.maxImageCount < minImageCount))
-		{
-			minImageCount = surfaceCapabilities.maxImageCount;
-		}
-		return minImageCount;
-	}
-
-	static vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR> &availableFormats)
-	{
-		assert(!availableFormats.empty());
-		const auto formatIt = std::ranges::find_if(
-		    availableFormats,
-		    [](const auto &format) { return format.format == vk::Format::eB8G8R8A8Srgb && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear; });
-		return formatIt != availableFormats.end() ? *formatIt : availableFormats[0];
-	}
-
-	static vk::PresentModeKHR chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes)
-	{
-		assert(std::ranges::any_of(availablePresentModes, [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
-		return std::ranges::any_of(availablePresentModes,
-		                           [](const vk::PresentModeKHR value) { return vk::PresentModeKHR::eMailbox == value; }) ?
-		           vk::PresentModeKHR::eMailbox :
-		           vk::PresentModeKHR::eFifo;
-	}
-
-	vk::Extent2D chooseSwapExtent(vk::SurfaceCapabilitiesKHR const &capabilities)
-	{
-		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
-		{
-			return capabilities.currentExtent;
-		}
-		int width, height;
-		glfwGetFramebufferSize(window, &width, &height);
-
-		return {
-		    std::clamp<uint32_t>(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
-		    std::clamp<uint32_t>(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)};
 	}
 
 	std::vector<const char *> getRequiredInstanceExtensions()
