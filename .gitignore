@@ -1,0 +1,25 @@
+# Build output
+/build/
+build/
+
+# vcpkg (manifest mode installs here)
+/vcpkg_installed/
+vcpkg_installed/
+
+# Compiled shaders / generated SPIR-V
+*.spv
+
+# CMake bits if configured in-source
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+
+# OS cruft
+.DS_Store
+Thumbs.db

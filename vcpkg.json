@@ -1,0 +1,20 @@
+{
+  "name": "tank-game",
+  "version": "0.1.0",
+  "description": "Simple Vulkan base project, the starting point for a small driving + shooting tank game.",
+  "dependencies": [
+    "glfw3",
+    "glm",
+    "stb",
+    "tinyobjloader",
+    "tinygltf",
+    "nlohmann-json",
+    {
+      "name": "ktx",
+      "features": [
+        "vulkan"
+      ]
+    },
+    "openal-soft"
+  ]
+}
