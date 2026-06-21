@@ -120,18 +120,22 @@ endif()
 set(SHADER_TARGET   ${PROJECT_NAME}_shaders)
 set(SHADERS_DIR     ${APP_OUTPUT_DIR}/shaders)
 set(SHADER_SOURCES  "${CMAKE_CURRENT_SOURCE_DIR}/shaders/shader.slang")
+set(SHADERS_DIR_STAMP ${SHADERS_DIR}/.dir.stamp)
 set(ENTRY_POINTS    -entry vertMain -entry fragMain)
 
 add_custom_command(
-  OUTPUT ${SHADERS_DIR}
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADERS_DIR})
+  OUTPUT ${SHADERS_DIR_STAMP}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADERS_DIR}
+  COMMAND ${CMAKE_COMMAND} -E touch ${SHADERS_DIR_STAMP}
+  COMMENT "Preparing shader output directory"
+  VERBATIM)
 add_custom_command(
   OUTPUT  ${SHADERS_DIR}/slang.spv
   COMMAND ${SLANGC_EXECUTABLE} ${SHADER_SOURCES} -target spirv -profile spirv_1_4
           -emit-spirv-directly -fvk-use-entrypoint-name ${ENTRY_POINTS}
           -o ${SHADERS_DIR}/slang.spv
   WORKING_DIRECTORY ${SHADERS_DIR}
-  DEPENDS ${SHADERS_DIR} ${SHADER_SOURCES}
+  DEPENDS ${SHADERS_DIR_STAMP} ${SHADER_SOURCES}
   COMMENT "Compiling Slang shaders"
   VERBATIM)
 add_custom_target(${SHADER_TARGET} DEPENDS ${SHADERS_DIR}/slang.spv)
