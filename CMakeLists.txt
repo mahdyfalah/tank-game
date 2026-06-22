@@ -92,13 +92,15 @@ add_executable (${PROJECT_NAME}
   src/main.cpp
   src/ground_tile_map.cpp
   src/camera.cpp
+  src/scene/tank.cpp
+  src/scene/tank_controller.cpp
   src/render/swapchain_bundle.cpp)
 set_target_properties (${PROJECT_NAME} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${APP_OUTPUT_DIR}
   CXX_STANDARD 20
   CXX_STANDARD_REQUIRED ON)
 
-target_link_libraries (${PROJECT_NAME} PRIVATE Vulkan::cppm glfw glm::glm)
+target_link_libraries (${PROJECT_NAME} PRIVATE Vulkan::cppm glfw glm::glm tinygltf::tinygltf)
 target_include_directories (${PROJECT_NAME} PRIVATE ${STB_INCLUDEDIR})
 
 if(ENABLE_CPP20_MODULE)
@@ -146,3 +148,6 @@ add_dependencies(${PROJECT_NAME} ${SHADER_TARGET})
 # ---------------------------------------------------------------------------
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/assets/textures/grass.jpg"
      DESTINATION ${APP_OUTPUT_DIR}/textures)
+
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/cartoon_tank"
+  DESTINATION ${APP_OUTPUT_DIR}/models)

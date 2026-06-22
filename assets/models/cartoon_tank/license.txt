@@ -1,0 +1,11 @@
+Model Information:
+* title:	Cartoon Tank
+* source:	https://sketchfab.com/3d-models/cartoon-tank-7dca2d00a76b4a4e83b8174b622f6ff9
+* author:	golddog (https://sketchfab.com/golddog)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Cartoon Tank" (https://sketchfab.com/3d-models/cartoon-tank-7dca2d00a76b4a4e83b8174b622f6ff9) by golddog (https://sketchfab.com/golddog) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

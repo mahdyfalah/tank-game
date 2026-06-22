@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <assert.h>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -28,6 +29,8 @@ import vulkan_hpp;
 #include "camera.h"
 #include "ground_tile_map.h"
 #include "render/swapchain_bundle.h"
+#include "scene/tank.h"
+#include "scene/tank_controller.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -71,33 +74,46 @@ struct UniformBufferObject
 	glm::mat4 proj;
 };
 
-static std::vector<Vertex> buildVerticesFromGroundMesh(const GroundMeshData &meshData)
+static void appendMeshToScene(std::vector<Vertex> &sceneVertices,
+	                          std::vector<uint32_t> &sceneIndices,
+	                          const std::vector<glm::vec3> &positions,
+	                          const std::vector<glm::vec2> &texCoords,
+	                          const std::vector<uint32_t> &indices,
+	                          const glm::vec3 &color)
 {
-	std::vector<Vertex> vertices;
-	vertices.reserve(meshData.positions.size());
+	const uint32_t baseVertex = static_cast<uint32_t>(sceneVertices.size());
+	sceneVertices.reserve(sceneVertices.size() + positions.size());
 
-	for (size_t i = 0; i < meshData.positions.size(); ++i)
+	for (size_t i = 0; i < positions.size(); ++i)
 	{
-		vertices.push_back({meshData.positions[i], {1.0f, 1.0f, 1.0f}, meshData.texCoords[i]});
+		const glm::vec2 uv = i < texCoords.size() ? texCoords[i] : glm::vec2(0.0f, 0.0f);
+		sceneVertices.push_back({positions[i], color, uv});
 	}
 
-	return vertices;
+	sceneIndices.reserve(sceneIndices.size() + indices.size());
+	for (uint32_t index : indices)
+	{
+		sceneIndices.push_back(baseVertex + index);
+	}
 }
 
-constexpr uint32_t MAP_TILES_PER_SIDE = 10;
+constexpr uint32_t MAP_TILES_PER_SIDE = 30;
 constexpr float    MAP_TILE_SIZE      = 1.0f;
 constexpr float    MAP_UV_PER_TILE    = 1.0f;
+constexpr float    MAP_HALF_EXTENT    = (static_cast<float>(MAP_TILES_PER_SIDE) * MAP_TILE_SIZE) * 0.5f;
 
-constexpr glm::vec3 CAMERA_POSITION = {0.0f, -8.0f, 8.0f};
+constexpr glm::vec3 TANK_SPAWN_POSITION = {0.0f, 0.0f, 0.0f};
+constexpr float     TANK_DESIRED_LENGTH = 3.2f;
+constexpr float     TANK_GROUND_OFFSET  = 0.0f;
+constexpr glm::vec3 TANK_COLOR          = {1.0f, 1.0f, 1.0f};
+constexpr const char *GROUND_TEXTURE_PATH = "textures/grass.jpg";
+constexpr const char *TANK_TEXTURE_PATH   = "models/cartoon_tank/textures/Main.001_baseColor.png";
+
+constexpr glm::vec3 CAMERA_POSITION = {18.0f, -18.0f, 18.0f};
 constexpr glm::vec3 CAMERA_TARGET   = {0.0f, 0.0f, 0.0f};
 constexpr glm::vec3 CAMERA_UP       = {0.0f, 0.0f, 1.0f};
 
-const GroundTileMap groundTileMap(MAP_TILES_PER_SIDE, MAP_TILE_SIZE, MAP_UV_PER_TILE);
-const GroundMeshData &groundMesh = groundTileMap.getMeshData();
-const auto            vertices   = buildVerticesFromGroundMesh(groundMesh);
-const auto           &indices    = groundMesh.indices;
-
-const Camera mainCamera(CAMERA_POSITION, CAMERA_TARGET, CAMERA_UP, 45.0f, 0.1f, 100.0f);
+const Camera mainCamera(CAMERA_POSITION, CAMERA_TARGET, CAMERA_UP, 25.0f, 0.1f, 100.0f);
 
 class HelloTriangleApplication
 {
@@ -126,9 +142,12 @@ class HelloTriangleApplication
 	vk::raii::PipelineLayout      pipelineLayout      = nullptr;
 	vk::raii::Pipeline            graphicsPipeline    = nullptr;
 
-	vk::raii::Image        textureImage       = nullptr;
-	vk::raii::DeviceMemory textureImageMemory = nullptr;
-	vk::raii::ImageView    textureImageView   = nullptr;
+	vk::raii::Image        groundTextureImage       = nullptr;
+	vk::raii::DeviceMemory groundTextureImageMemory = nullptr;
+	vk::raii::ImageView    groundTextureImageView   = nullptr;
+	vk::raii::Image        tankTextureImage         = nullptr;
+	vk::raii::DeviceMemory tankTextureImageMemory   = nullptr;
+	vk::raii::ImageView    tankTextureImageView     = nullptr;
 	vk::raii::Sampler      textureSampler     = nullptr;
 
 	vk::raii::Buffer       vertexBuffer       = nullptr;
@@ -136,12 +155,22 @@ class HelloTriangleApplication
 	vk::raii::Buffer       indexBuffer        = nullptr;
 	vk::raii::DeviceMemory indexBufferMemory  = nullptr;
 
-	std::vector<vk::raii::Buffer>       uniformBuffers;
-	std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
-	std::vector<void *>                 uniformBuffersMapped;
+	std::vector<Vertex>   sceneVertices;
+	std::vector<uint32_t> sceneIndices;
+	uint32_t              groundIndexCount = 0;
+	uint32_t              tankFirstIndex   = 0;
+	uint32_t              tankIndexCount   = 0;
+
+	std::vector<vk::raii::Buffer>       groundUniformBuffers;
+	std::vector<vk::raii::DeviceMemory> groundUniformBuffersMemory;
+	std::vector<void *>                 groundUniformBuffersMapped;
+	std::vector<vk::raii::Buffer>       tankUniformBuffers;
+	std::vector<vk::raii::DeviceMemory> tankUniformBuffersMemory;
+	std::vector<void *>                 tankUniformBuffersMapped;
 
 	vk::raii::DescriptorPool             descriptorPool = nullptr;
-	std::vector<vk::raii::DescriptorSet> descriptorSets;
+	std::vector<vk::raii::DescriptorSet> groundDescriptorSets;
+	std::vector<vk::raii::DescriptorSet> tankDescriptorSets;
 
 	vk::raii::CommandPool                commandPool = nullptr;
 	std::vector<vk::raii::CommandBuffer> commandBuffers;
@@ -150,6 +179,8 @@ class HelloTriangleApplication
 	std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
 	std::vector<vk::raii::Fence>     inFlightFences;
 	uint32_t                         frameIndex = 0;
+	TankController                   tankController{TANK_SPAWN_POSITION, MAP_HALF_EXTENT, TANK_SPAWN_POSITION.z};
+	std::chrono::high_resolution_clock::time_point lastFrameTime = std::chrono::high_resolution_clock::now();
 
 	bool framebufferResized = false;
 
@@ -185,11 +216,12 @@ class HelloTriangleApplication
 		createLogicalDevice();
 		swapchainBundle = std::make_unique<SwapchainBundle>(physicalDevice, device, surface, window);
 		swapchainBundle->create();
+		buildSceneGeometry();
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
 		createCommandPool();
-		createTextureImage();
-		createTextureImageView();
+		createTextureImages();
+		createTextureImageViews();
 		createTextureSampler();
 		createVertexBuffer();
 		createIndexBuffer();
@@ -200,11 +232,52 @@ class HelloTriangleApplication
 		createSyncObjects();
 	}
 
+	void buildSceneGeometry()
+	{
+		sceneVertices.clear();
+		sceneIndices.clear();
+
+		GroundTileMap         groundTileMap(MAP_TILES_PER_SIDE, MAP_TILE_SIZE, MAP_UV_PER_TILE);
+		const GroundMeshData &groundMesh = groundTileMap.getMeshData();
+		appendMeshToScene(sceneVertices,
+		                  sceneIndices,
+		                  groundMesh.positions,
+		                  groundMesh.texCoords,
+		                  groundMesh.indices,
+		                  {1.0f, 1.0f, 1.0f});
+		groundIndexCount = static_cast<uint32_t>(groundMesh.indices.size());
+
+		const Tank tank(resolveResourcePath("models/cartoon_tank/scene.gltf"),
+		                {.position = {0.0f, 0.0f, 0.0f},
+		                 .desiredLength = TANK_DESIRED_LENGTH,
+		                 .groundOffset = TANK_GROUND_OFFSET,
+		                 .color = TANK_COLOR});
+		const TankMeshData &tankMesh = tank.getMeshData();
+		appendMeshToScene(sceneVertices,
+		                  sceneIndices,
+		                  tankMesh.positions,
+		                  tankMesh.texCoords,
+		                  tankMesh.indices,
+		                  tankMesh.color);
+		tankFirstIndex = groundIndexCount;
+		tankIndexCount = static_cast<uint32_t>(tankMesh.indices.size());
+
+		if (sceneVertices.empty() || sceneIndices.empty() || groundIndexCount == 0 || tankIndexCount == 0)
+		{
+			throw std::runtime_error("Scene geometry is empty.");
+		}
+	}
+
 	void mainLoop()
 	{
+		lastFrameTime = std::chrono::high_resolution_clock::now();
 		while (!glfwWindowShouldClose(window))
 		{
 			glfwPollEvents();
+			auto currentFrameTime = std::chrono::high_resolution_clock::now();
+			float deltaTimeSeconds = std::chrono::duration<float>(currentFrameTime - lastFrameTime).count();
+			lastFrameTime = currentFrameTime;
+			tankController.update(window, deltaTimeSeconds);
 			drawFrame();
 		}
 
@@ -472,10 +545,10 @@ class HelloTriangleApplication
 		commandPool = vk::raii::CommandPool(device, poolInfo);
 	}
 
-	void createTextureImage()
+	void createTextureImageFromPath(const std::string &texturePath, vk::raii::Image &outImage, vk::raii::DeviceMemory &outImageMemory)
 	{
 		int            texWidth, texHeight, texChannels;
-		stbi_uc       *pixels    = stbi_load(resolveResourcePath("textures/grass.jpg").c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+		stbi_uc       *pixels    = stbi_load(resolveResourcePath(texturePath).c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 		vk::DeviceSize imageSize = texWidth * texHeight * 4;
 
 		if (!pixels)
@@ -492,23 +565,30 @@ class HelloTriangleApplication
 
 		stbi_image_free(pixels);
 
-		std::tie(textureImage, textureImageMemory) = createImage(texWidth,
-		                                                         texHeight,
-		                                                         vk::Format::eR8G8B8A8Srgb,
-		                                                         vk::ImageTiling::eOptimal,
-		                                                         vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
-		                                                         vk::MemoryPropertyFlagBits::eDeviceLocal);
+		std::tie(outImage, outImageMemory) = createImage(texWidth,
+		                                                 texHeight,
+		                                                 vk::Format::eR8G8B8A8Srgb,
+		                                                 vk::ImageTiling::eOptimal,
+		                                                 vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+		                                                 vk::MemoryPropertyFlagBits::eDeviceLocal);
 
 		vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands();
-		transitionImageLayout(commandBuffer, textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
-		copyBufferToImage(commandBuffer, stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-		transitionImageLayout(commandBuffer, textureImage, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+		transitionImageLayout(commandBuffer, outImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+		copyBufferToImage(commandBuffer, stagingBuffer, outImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+		transitionImageLayout(commandBuffer, outImage, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
 		endSingleTimeCommands(std::move(commandBuffer));
 	}
 
-	void createTextureImageView()
+	void createTextureImages()
 	{
-		textureImageView = createImageView(*textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
+		createTextureImageFromPath(GROUND_TEXTURE_PATH, groundTextureImage, groundTextureImageMemory);
+		createTextureImageFromPath(TANK_TEXTURE_PATH, tankTextureImage, tankTextureImageMemory);
+	}
+
+	void createTextureImageViews()
+	{
+		groundTextureImageView = createImageView(*groundTextureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
+		tankTextureImageView   = createImageView(*tankTextureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
 	}
 
 	void createTextureSampler()
@@ -609,13 +689,13 @@ class HelloTriangleApplication
 
 	void createVertexBuffer()
 	{
-		vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+		vk::DeviceSize bufferSize = sizeof(sceneVertices[0]) * sceneVertices.size();
 
 		auto [stagingBuffer, stagingBufferMemory] =
 		    createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
 		void *dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
-		memcpy(dataStaging, vertices.data(), bufferSize);
+		memcpy(dataStaging, sceneVertices.data(), bufferSize);
 		stagingBufferMemory.unmapMemory();
 
 		std::tie(vertexBuffer, vertexBufferMemory) =
@@ -637,13 +717,13 @@ class HelloTriangleApplication
 
 	void createIndexBuffer()
 	{
-		vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+		vk::DeviceSize bufferSize = sizeof(sceneIndices[0]) * sceneIndices.size();
 
 		auto [stagingBuffer, stagingBufferMemory] =
 		    createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
 		void *data = stagingBufferMemory.mapMemory(0, bufferSize);
-		memcpy(data, indices.data(), (size_t) bufferSize);
+		memcpy(data, sceneIndices.data(), (size_t) bufferSize);
 		stagingBufferMemory.unmapMemory();
 
 		std::tie(indexBuffer, indexBufferMemory) =
@@ -654,23 +734,37 @@ class HelloTriangleApplication
 
 	void createUniformBuffers()
 	{
+		groundUniformBuffers.clear();
+		groundUniformBuffersMemory.clear();
+		groundUniformBuffersMapped.clear();
+		tankUniformBuffers.clear();
+		tankUniformBuffersMemory.clear();
+		tankUniformBuffersMapped.clear();
+
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		{
 			vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
-			auto [buffer, bufferMem]  = createBuffer(
+			auto [groundBuffer, groundBufferMem]  = createBuffer(
 			    bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-			uniformBuffers.emplace_back(std::move(buffer));
-			uniformBuffersMemory.emplace_back(std::move(bufferMem));
-			uniformBuffersMapped.emplace_back(uniformBuffersMemory.back().mapMemory(0, bufferSize));
+			groundUniformBuffers.emplace_back(std::move(groundBuffer));
+			groundUniformBuffersMemory.emplace_back(std::move(groundBufferMem));
+			groundUniformBuffersMapped.emplace_back(groundUniformBuffersMemory.back().mapMemory(0, bufferSize));
+
+			auto [tankBuffer, tankBufferMem]  = createBuffer(
+			    bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+			tankUniformBuffers.emplace_back(std::move(tankBuffer));
+			tankUniformBuffersMemory.emplace_back(std::move(tankBufferMem));
+			tankUniformBuffersMapped.emplace_back(tankUniformBuffersMemory.back().mapMemory(0, bufferSize));
 		}
 	}
 
 	void createDescriptorPool()
 	{
-		std::array<vk::DescriptorPoolSize, 2> poolSize{{{.type = vk::DescriptorType::eUniformBuffer, .descriptorCount = MAX_FRAMES_IN_FLIGHT},
-		                                                {.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = MAX_FRAMES_IN_FLIGHT}}};
+		constexpr uint32_t descriptorSetCount = MAX_FRAMES_IN_FLIGHT * 2;
+		std::array<vk::DescriptorPoolSize, 2> poolSize{{{.type = vk::DescriptorType::eUniformBuffer, .descriptorCount = descriptorSetCount},
+		                                                {.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = descriptorSetCount}}};
 		vk::DescriptorPoolCreateInfo          poolInfo{.flags         = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-		                                               .maxSets       = MAX_FRAMES_IN_FLIGHT,
+		                                               .maxSets       = descriptorSetCount,
 		                                               .poolSizeCount = static_cast<uint32_t>(poolSize.size()),
 		                                               .pPoolSizes    = poolSize.data()};
 		descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
@@ -678,32 +772,58 @@ class HelloTriangleApplication
 
 	void createDescriptorSets()
 	{
-		std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
+		std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT * 2, descriptorSetLayout);
 		vk::DescriptorSetAllocateInfo        allocInfo{
 		    .descriptorPool     = descriptorPool,
 		    .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
 		    .pSetLayouts        = layouts.data()};
 
-		descriptorSets.clear();
-		descriptorSets = device.allocateDescriptorSets(allocInfo);
+		groundDescriptorSets.clear();
+		tankDescriptorSets.clear();
+		auto allDescriptorSets = device.allocateDescriptorSets(allocInfo);
+		groundDescriptorSets.reserve(MAX_FRAMES_IN_FLIGHT);
+		tankDescriptorSets.reserve(MAX_FRAMES_IN_FLIGHT);
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+		{
+			groundDescriptorSets.push_back(std::move(allDescriptorSets[i]));
+		}
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+		{
+			tankDescriptorSets.push_back(std::move(allDescriptorSets[MAX_FRAMES_IN_FLIGHT + i]));
+		}
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		{
-			vk::DescriptorBufferInfo bufferInfo{.buffer = uniformBuffers[i], .offset = 0, .range = sizeof(UniformBufferObject)};
-			vk::DescriptorImageInfo  imageInfo{.sampler = textureSampler, .imageView = textureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+			vk::DescriptorBufferInfo groundBufferInfo{.buffer = groundUniformBuffers[i], .offset = 0, .range = sizeof(UniformBufferObject)};
+			vk::DescriptorBufferInfo tankBufferInfo{.buffer = tankUniformBuffers[i], .offset = 0, .range = sizeof(UniformBufferObject)};
+			vk::DescriptorImageInfo  groundImageInfo{.sampler = textureSampler, .imageView = groundTextureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+			vk::DescriptorImageInfo  tankImageInfo{.sampler = textureSampler, .imageView = tankTextureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
 
-			std::array<vk::WriteDescriptorSet, 2> descriptorWrites{{{.dstSet          = descriptorSets[i],
-			                                                         .dstBinding      = 0,
-			                                                         .dstArrayElement = 0,
-			                                                         .descriptorCount = 1,
-			                                                         .descriptorType  = vk::DescriptorType::eUniformBuffer,
-			                                                         .pBufferInfo     = &bufferInfo},
-			                                                        {.dstSet          = descriptorSets[i],
-			                                                         .dstBinding      = 1,
-			                                                         .dstArrayElement = 0,
-			                                                         .descriptorCount = 1,
-			                                                         .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
-			                                                         .pImageInfo      = &imageInfo}}};
+			std::array<vk::WriteDescriptorSet, 4> descriptorWrites{{
+			    {.dstSet          = groundDescriptorSets[i],
+			     .dstBinding      = 0,
+			     .dstArrayElement = 0,
+			     .descriptorCount = 1,
+			     .descriptorType  = vk::DescriptorType::eUniformBuffer,
+			     .pBufferInfo     = &groundBufferInfo},
+			    {.dstSet          = groundDescriptorSets[i],
+			     .dstBinding      = 1,
+			     .dstArrayElement = 0,
+			     .descriptorCount = 1,
+			     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
+			     .pImageInfo      = &groundImageInfo},
+			    {.dstSet          = tankDescriptorSets[i],
+			     .dstBinding      = 0,
+			     .dstArrayElement = 0,
+			     .descriptorCount = 1,
+			     .descriptorType  = vk::DescriptorType::eUniformBuffer,
+			     .pBufferInfo     = &tankBufferInfo},
+			    {.dstSet          = tankDescriptorSets[i],
+			     .dstBinding      = 1,
+			     .dstArrayElement = 0,
+			     .descriptorCount = 1,
+			     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
+			     .pImageInfo      = &tankImageInfo}}};
 			device.updateDescriptorSets(descriptorWrites, {});
 		}
 	}
@@ -816,8 +936,12 @@ class HelloTriangleApplication
 		commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapchainExtent));
 		commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
 		commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
-		commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *descriptorSets[frameIndex], nullptr);
-		commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+
+		commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *groundDescriptorSets[frameIndex], nullptr);
+		commandBuffer.drawIndexed(groundIndexCount, 1, 0, 0, 0);
+
+		commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *tankDescriptorSets[frameIndex], nullptr);
+		commandBuffer.drawIndexed(tankIndexCount, 1, tankFirstIndex, 0, 0);
 		commandBuffer.endRendering();
 
 		// After rendering, transition the swapchain image to vk::ImageLayout::ePresentSrcKHR
@@ -884,14 +1008,22 @@ class HelloTriangleApplication
 
 	void updateUniformBuffer(uint32_t currentImage)
 	{
-		UniformBufferObject ubo{};
-		ubo.model = glm::mat4(1.0f);
-		ubo.view  = mainCamera.getViewMatrix();
-		const vk::Extent2D &swapchainExtent = swapchainBundle->getExtent();
-		ubo.proj = mainCamera.getProjectionMatrix(static_cast<float>(swapchainExtent.width) / static_cast<float>(swapchainExtent.height));
-		ubo.proj[1][1] *= -1;
+		UniformBufferObject groundUbo{};
+		UniformBufferObject tankUbo{};
 
-		memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+		groundUbo.model = glm::mat4(1.0f);
+		tankUbo.model   = tankController.getModelMatrix();
+
+		groundUbo.view = mainCamera.getViewMatrix();
+		tankUbo.view   = groundUbo.view;
+		const vk::Extent2D &swapchainExtent = swapchainBundle->getExtent();
+		groundUbo.proj = mainCamera.getProjectionMatrix(static_cast<float>(swapchainExtent.width) / static_cast<float>(swapchainExtent.height));
+		tankUbo.proj   = groundUbo.proj;
+		groundUbo.proj[1][1] *= -1;
+		tankUbo.proj[1][1] *= -1;
+
+		memcpy(groundUniformBuffersMapped[currentImage], &groundUbo, sizeof(groundUbo));
+		memcpy(tankUniformBuffersMapped[currentImage], &tankUbo, sizeof(tankUbo));
 	}
 
 	void drawFrame()
