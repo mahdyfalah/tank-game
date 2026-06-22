@@ -317,3 +317,9 @@ void CrateSystem::removeAt(std::vector<std::size_t> indices)
         }
     }
 }
+
+void CrateSystem::reset()
+{
+    crates.clear();
+    spawnTimer = 0.0f;
+}

@@ -10,6 +10,13 @@
     "tinygltf",
     "nlohmann-json",
     {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "vulkan-binding"
+      ]
+    },
+    {
       "name": "ktx",
       "features": [
         "vulkan"

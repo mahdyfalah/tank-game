@@ -54,6 +54,9 @@ class CrateSystem
     // Removes the crates at the given indices (used when bullets hit them).
     void removeAt(std::vector<std::size_t> indices);
 
+    // Clears all crates and resets the spawn timer (used when a round starts).
+    void reset();
+
     [[nodiscard]] const std::vector<Crate> &getCrates() const { return crates; }
 
   private:

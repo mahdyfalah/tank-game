@@ -34,6 +34,7 @@ find_package (Vulkan 1.4.335 REQUIRED)   # Vulkan SDK 1.4.335 or newer
 find_package (tinyobjloader REQUIRED)    # .obj model loading
 find_package (tinygltf REQUIRED)         # .gltf / .glb model loading
 find_package (KTX REQUIRED)              # .ktx2 compressed textures
+find_package (imgui REQUIRED)            # immediate-mode GUI (HUD / menus)
 
 # ---------------------------------------------------------------------------
 # Vulkan C++ module (only built when ENABLE_CPP20_MODULE is ON)
@@ -92,6 +93,7 @@ add_executable (${PROJECT_NAME}
   src/main.cpp
   src/ground_tile_map.cpp
   src/camera.cpp
+  src/game.cpp
   src/scene/tank.cpp
   src/scene/tank_controller.cpp
   src/scene/bullet.cpp
@@ -102,7 +104,7 @@ set_target_properties (${PROJECT_NAME} PROPERTIES
   CXX_STANDARD 20
   CXX_STANDARD_REQUIRED ON)
 
-target_link_libraries (${PROJECT_NAME} PRIVATE Vulkan::cppm glfw glm::glm tinygltf::tinygltf)
+target_link_libraries (${PROJECT_NAME} PRIVATE Vulkan::cppm glfw glm::glm tinygltf::tinygltf imgui::imgui)
 target_include_directories (${PROJECT_NAME} PRIVATE ${STB_INCLUDEDIR})
 
 if(ENABLE_CPP20_MODULE)

@@ -58,6 +58,9 @@ class BulletSystem
     // Removes the bullets at the given indices (used when they hit a crate).
     void removeAt(std::vector<std::size_t> indices);
 
+    // Removes every active bullet (used when a new round starts).
+    void clear() { bullets.clear(); }
+
     [[nodiscard]] const std::vector<Bullet> &getBullets() const { return bullets; }
 
   private:

@@ -28,12 +28,17 @@ import vulkan_hpp;
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "camera.h"
+#include "game.h"
 #include "ground_tile_map.h"
 #include "render/swapchain_bundle.h"
 #include "scene/tank.h"
 #include "scene/tank_controller.h"
 #include "scene/bullet.h"
 #include "scene/crate.h"
+
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -100,7 +105,7 @@ static void appendMeshToScene(std::vector<Vertex> &sceneVertices,
 	}
 }
 
-constexpr uint32_t MAP_TILES_PER_SIDE = 100;
+constexpr uint32_t MAP_TILES_PER_SIDE = 50;
 constexpr float    MAP_TILE_SIZE      = 1.0f;
 constexpr float    MAP_UV_PER_TILE    = 1.0f;
 constexpr float    MAP_HALF_EXTENT    = (static_cast<float>(MAP_TILES_PER_SIDE) * MAP_TILE_SIZE) * 0.5f;
@@ -225,7 +230,10 @@ class HelloTriangleApplication
 	TankController                   tankController{TANK_SPAWN_POSITION, MAP_HALF_EXTENT, TANK_SPAWN_POSITION.z};
 	BulletSystem                     bulletSystem{static_cast<std::size_t>(MAX_BULLETS), MAP_HALF_EXTENT, BULLET_MAX_RANGE};
 	CrateSystem                      crateSystem{static_cast<std::size_t>(MAX_CRATES), CRATE_SPAWN_INTERVAL, MAP_HALF_EXTENT, CRATE_SPAWN_MARGIN};
+	Game                             game{45.0f};
+	vk::raii::DescriptorPool         imguiDescriptorPool = nullptr;
 	bool                             spaceWasPressed = false;
+	bool                             enterWasPressed = false;
 	std::chrono::high_resolution_clock::time_point lastFrameTime = std::chrono::high_resolution_clock::now();
 
 	bool framebufferResized = false;
@@ -276,6 +284,59 @@ class HelloTriangleApplication
 		createDescriptorSets();
 		createCommandBuffers();
 		createSyncObjects();
+		initImGui();
+	}
+
+	void initImGui()
+	{
+		// A descriptor pool dedicated to ImGui. It allocates one combined image
+		// sampler per texture (font atlas plus any extra textures), so keep a few
+		// spare slots to stay compatible across ImGui backend versions.
+		std::array<vk::DescriptorPoolSize, 1> poolSizes{{{.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = 16}}};
+		vk::DescriptorPoolCreateInfo          poolInfo{
+		             .flags         = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+		             .maxSets       = 16,
+		             .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
+		             .pPoolSizes    = poolSizes.data()};
+		imguiDescriptorPool = vk::raii::DescriptorPool(device, poolInfo);
+
+		IMGUI_CHECKVERSION();
+		ImGui::CreateContext();
+		ImGui::StyleColorsDark();
+		ImGui::GetStyle().ScaleAllSizes(1.2f);
+
+		ImGui_ImplGlfw_InitForVulkan(window, true);
+
+		VkFormat                      colorFormat = static_cast<VkFormat>(swapchainBundle->getSurfaceFormat().format);
+		VkPipelineRenderingCreateInfo pipelineRenderingInfo{};
+		pipelineRenderingInfo.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+		pipelineRenderingInfo.colorAttachmentCount    = 1;
+		pipelineRenderingInfo.pColorAttachmentFormats = &colorFormat;
+		pipelineRenderingInfo.depthAttachmentFormat   = static_cast<VkFormat>(swapchainBundle->getDepthFormat());
+
+		ImGui_ImplVulkan_InitInfo initInfo{};
+		initInfo.ApiVersion                                       = VK_API_VERSION_1_3;
+		initInfo.Instance                                        = static_cast<VkInstance>(*instance);
+		initInfo.PhysicalDevice                                  = static_cast<VkPhysicalDevice>(*physicalDevice);
+		initInfo.Device                                          = static_cast<VkDevice>(*device);
+		initInfo.QueueFamily                                     = queueIndex;
+		initInfo.Queue                                           = static_cast<VkQueue>(*queue);
+		initInfo.DescriptorPool                                  = static_cast<VkDescriptorPool>(*imguiDescriptorPool);
+		initInfo.MinImageCount                                   = MAX_FRAMES_IN_FLIGHT;
+		initInfo.ImageCount                                      = static_cast<uint32_t>(swapchainBundle->getImages().size());
+		initInfo.UseDynamicRendering                             = true;
+		initInfo.PipelineInfoMain.MSAASamples                    = VK_SAMPLE_COUNT_1_BIT;
+		initInfo.PipelineInfoMain.PipelineRenderingCreateInfo    = pipelineRenderingInfo;
+		ImGui_ImplVulkan_Init(&initInfo);
+	}
+
+	// Returns the tank, bullets and crates to their initial state for a new round.
+	void resetWorld()
+	{
+		tankController.reset();
+		bulletSystem.clear();
+		crateSystem.reset();
+		mainCamera.follow(tankController.getPosition(), CAMERA_FOLLOW_OFFSET, 1.0f);
 	}
 
 	void buildSceneGeometry()
@@ -342,57 +403,91 @@ class HelloTriangleApplication
 		while (!glfwWindowShouldClose(window))
 		{
 			glfwPollEvents();
-			auto currentFrameTime = std::chrono::high_resolution_clock::now();
+			auto  currentFrameTime = std::chrono::high_resolution_clock::now();
 			float deltaTimeSeconds = std::chrono::duration<float>(currentFrameTime - lastFrameTime).count();
-			lastFrameTime = currentFrameTime;
-			tankController.update(window, deltaTimeSeconds);
+			lastFrameTime          = currentFrameTime;
 
-			// Fire a bullet on the rising edge of Space (one shot per press).
-			const bool spaceIsPressed = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
-			if (spaceIsPressed && !spaceWasPressed)
+			// --- ImGui frame + HUD / menus ------------------------------------
+			ImGui_ImplVulkan_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
+			const vk::Extent2D &extent = swapchainBundle->getExtent();
+			game.buildUi(static_cast<float>(extent.width), static_cast<float>(extent.height));
+
+			// Enter also starts / restarts the round (rising edge).
+			const bool enterIsPressed = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
+			if (enterIsPressed && !enterWasPressed && !game.isPlaying())
 			{
-				const glm::vec3 forward = tankController.getForward();
-				glm::vec3       muzzle  = tankController.getPosition() + forward * BULLET_MUZZLE_OFFSET;
-				muzzle.z                = BULLET_SPAWN_HEIGHT;
-				bulletSystem.fire(muzzle, forward, BULLET_SPEED);
+				game.start();
 			}
-			spaceWasPressed = spaceIsPressed;
+			enterWasPressed = enterIsPressed;
 
-			bulletSystem.update(deltaTimeSeconds);
-			crateSystem.update(deltaTimeSeconds);
-
-			// Resolve bullet/crate hits: shooting a crate removes both.
+			if (game.consumeJustStarted())
 			{
-				const std::vector<Bullet> &bullets = bulletSystem.getBullets();
-				const std::vector<Crate>  &crates  = crateSystem.getCrates();
-				std::vector<std::size_t>   crateHits;
-				std::vector<std::size_t>   bulletHits;
-				for (std::size_t bi = 0; bi < bullets.size(); ++bi)
+				resetWorld();
+			}
+
+			// --- World simulation (only while a round is running) -------------
+			if (game.isPlaying())
+			{
+				tankController.update(window, deltaTimeSeconds);
+
+				// Fire a bullet on the rising edge of Space (one shot per press).
+				const bool spaceIsPressed = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+				if (spaceIsPressed && !spaceWasPressed)
 				{
-					for (std::size_t ci = 0; ci < crates.size(); ++ci)
+					const glm::vec3 forward = tankController.getForward();
+					glm::vec3       muzzle  = tankController.getPosition() + forward * BULLET_MUZZLE_OFFSET;
+					muzzle.z                = BULLET_SPAWN_HEIGHT;
+					bulletSystem.fire(muzzle, forward, BULLET_SPEED);
+				}
+				spaceWasPressed = spaceIsPressed;
+
+				bulletSystem.update(deltaTimeSeconds);
+				crateSystem.update(deltaTimeSeconds);
+
+				// Resolve bullet/crate hits: shooting a crate removes both and scores.
+				{
+					const std::vector<Bullet> &bullets = bulletSystem.getBullets();
+					const std::vector<Crate>  &crates  = crateSystem.getCrates();
+					std::vector<std::size_t>   crateHits;
+					std::vector<std::size_t>   bulletHits;
+					for (std::size_t bi = 0; bi < bullets.size(); ++bi)
 					{
-						const glm::vec3 &bp    = bullets[bi].getPosition();
-						const glm::vec3 &cp    = crates[ci].getPosition();
-						const float      dx    = bp.x - cp.x;
-						const float      dy    = bp.y - cp.y;
-						if (dx * dx + dy * dy <= CRATE_HIT_RADIUS * CRATE_HIT_RADIUS)
+						for (std::size_t ci = 0; ci < crates.size(); ++ci)
 						{
-							crateHits.push_back(ci);
-							bulletHits.push_back(bi);
+							const glm::vec3 &bp = bullets[bi].getPosition();
+							const glm::vec3 &cp = crates[ci].getPosition();
+							const float      dx = bp.x - cp.x;
+							const float      dy = bp.y - cp.y;
+							if (dx * dx + dy * dy <= CRATE_HIT_RADIUS * CRATE_HIT_RADIUS)
+							{
+								crateHits.push_back(ci);
+								bulletHits.push_back(bi);
+							}
 						}
 					}
+					if (!crateHits.empty())
+					{
+						crateSystem.removeAt(crateHits);
+						bulletSystem.removeAt(bulletHits);
+						game.registerCrateHit(static_cast<int>(crateHits.size()));
+					}
 				}
-				if (!crateHits.empty())
-				{
-					crateSystem.removeAt(crateHits);
-					bulletSystem.removeAt(bulletHits);
-				}
+
+				// Frame-rate independent smoothing toward the tank.
+				const float cameraInterpolation = 1.0f - std::exp(-CAMERA_FOLLOW_RATE * deltaTimeSeconds);
+				mainCamera.follow(tankController.getPosition(), CAMERA_FOLLOW_OFFSET, cameraInterpolation);
+			}
+			else
+			{
+				spaceWasPressed = false;
 			}
 
-			// Frame-rate independent smoothing toward the tank.
-			const float cameraInterpolation = 1.0f - std::exp(-CAMERA_FOLLOW_RATE * deltaTimeSeconds);
-			mainCamera.follow(tankController.getPosition(), CAMERA_FOLLOW_OFFSET, cameraInterpolation);
+			// Advance the countdown last so the final frame still renders the world.
+			game.update(deltaTimeSeconds);
 
+			ImGui::Render();
 			drawFrame();
 		}
 
@@ -401,6 +496,10 @@ class HelloTriangleApplication
 
 	void cleanup()
 	{
+		ImGui_ImplVulkan_Shutdown();
+		ImGui_ImplGlfw_Shutdown();
+		ImGui::DestroyContext();
+
 		glfwDestroyWindow(window);
 
 		glfwTerminate();
@@ -1159,6 +1258,12 @@ class HelloTriangleApplication
 		{
 			commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *crateDescriptorSets[frameIndex * MAX_CRATES + c], nullptr);
 			commandBuffer.drawIndexed(crateIndexCount, 1, crateFirstIndex, 0, 0);
+		}
+
+		// Draw the ImGui HUD / menus on top of the scene.
+		if (ImDrawData *drawData = ImGui::GetDrawData())
+		{
+			ImGui_ImplVulkan_RenderDrawData(drawData, static_cast<VkCommandBuffer>(*commandBuffer));
 		}
 		commandBuffer.endRendering();
 

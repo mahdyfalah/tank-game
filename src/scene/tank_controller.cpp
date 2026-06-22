@@ -11,12 +11,21 @@ TankController::TankController(const glm::vec3 &initialPosition,
                                float mapHalfExtent,
                                float groundZ,
                                float initialYawRadians)
-    : position(initialPosition),
+    : initialPosition(initialPosition),
+      initialYawRadians(initialYawRadians),
+      position(initialPosition),
       yawRadians(initialYawRadians),
       mapHalfExtent(mapHalfExtent),
       groundZ(groundZ)
 {
     position.z = groundZ;
+}
+
+void TankController::reset()
+{
+    position   = initialPosition;
+    position.z = groundZ;
+    yawRadians = initialYawRadians;
 }
 
 void TankController::update(GLFWwindow *window, float deltaTimeSeconds)

@@ -14,11 +14,16 @@ class TankController
 
     void update(GLFWwindow *window, float deltaTimeSeconds);
 
+    // Returns the tank to its initial spawn position and orientation.
+    void reset();
+
     [[nodiscard]] glm::mat4 getModelMatrix() const;
     [[nodiscard]] glm::vec3 getPosition() const;
     [[nodiscard]] glm::vec3 getForward() const;
 
   private:
+    glm::vec3 initialPosition;
+    float     initialYawRadians;
     glm::vec3 position;
     float     yawRadians;
     float     mapHalfExtent;
