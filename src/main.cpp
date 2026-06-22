@@ -32,6 +32,7 @@ import vulkan_hpp;
 #include "render/swapchain_bundle.h"
 #include "scene/tank.h"
 #include "scene/tank_controller.h"
+#include "scene/bullet.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -109,6 +110,15 @@ constexpr float     TANK_GROUND_OFFSET  = 0.0f;
 constexpr glm::vec3 TANK_COLOR          = {1.0f, 1.0f, 1.0f};
 constexpr const char *GROUND_TEXTURE_PATH = "textures/grass.jpg";
 constexpr const char *TANK_TEXTURE_PATH   = "models/cartoon_tank/textures/Main.001_baseColor.png";
+constexpr const char *BULLET_TEXTURE_PATH = "models/9mm_bullet/textures/bullet_baseColor.jpeg";
+
+// Bullets / shooting.
+constexpr int   MAX_BULLETS           = 16;
+constexpr float BULLET_DESIRED_LENGTH = 0.6f;
+constexpr float BULLET_SPEED          = 32.0f;
+constexpr float BULLET_SPAWN_HEIGHT   = 0.6f;
+constexpr float BULLET_MUZZLE_OFFSET  = 1.9f;
+constexpr float BULLET_MAX_RANGE      = MAP_HALF_EXTENT * 2.5f;
 
 constexpr glm::vec3 CAMERA_POSITION = {18.0f, -18.0f, 18.0f};
 constexpr glm::vec3 CAMERA_TARGET   = {0.0f, 0.0f, 0.0f};
@@ -154,6 +164,9 @@ class HelloTriangleApplication
 	vk::raii::Image        tankTextureImage         = nullptr;
 	vk::raii::DeviceMemory tankTextureImageMemory   = nullptr;
 	vk::raii::ImageView    tankTextureImageView     = nullptr;
+	vk::raii::Image        bulletTextureImage       = nullptr;
+	vk::raii::DeviceMemory bulletTextureImageMemory = nullptr;
+	vk::raii::ImageView    bulletTextureImageView   = nullptr;
 	vk::raii::Sampler      textureSampler     = nullptr;
 
 	vk::raii::Buffer       vertexBuffer       = nullptr;
@@ -166,6 +179,8 @@ class HelloTriangleApplication
 	uint32_t              groundIndexCount = 0;
 	uint32_t              tankFirstIndex   = 0;
 	uint32_t              tankIndexCount   = 0;
+	uint32_t              bulletFirstIndex = 0;
+	uint32_t              bulletIndexCount = 0;
 
 	std::vector<vk::raii::Buffer>       groundUniformBuffers;
 	std::vector<vk::raii::DeviceMemory> groundUniformBuffersMemory;
@@ -173,10 +188,14 @@ class HelloTriangleApplication
 	std::vector<vk::raii::Buffer>       tankUniformBuffers;
 	std::vector<vk::raii::DeviceMemory> tankUniformBuffersMemory;
 	std::vector<void *>                 tankUniformBuffersMapped;
+	std::vector<vk::raii::Buffer>       bulletUniformBuffers;
+	std::vector<vk::raii::DeviceMemory> bulletUniformBuffersMemory;
+	std::vector<void *>                 bulletUniformBuffersMapped;
 
 	vk::raii::DescriptorPool             descriptorPool = nullptr;
 	std::vector<vk::raii::DescriptorSet> groundDescriptorSets;
 	std::vector<vk::raii::DescriptorSet> tankDescriptorSets;
+	std::vector<vk::raii::DescriptorSet> bulletDescriptorSets;
 
 	vk::raii::CommandPool                commandPool = nullptr;
 	std::vector<vk::raii::CommandBuffer> commandBuffers;
@@ -186,6 +205,8 @@ class HelloTriangleApplication
 	std::vector<vk::raii::Fence>     inFlightFences;
 	uint32_t                         frameIndex = 0;
 	TankController                   tankController{TANK_SPAWN_POSITION, MAP_HALF_EXTENT, TANK_SPAWN_POSITION.z};
+	BulletSystem                     bulletSystem{static_cast<std::size_t>(MAX_BULLETS), MAP_HALF_EXTENT, BULLET_MAX_RANGE};
+	bool                             spaceWasPressed = false;
 	std::chrono::high_resolution_clock::time_point lastFrameTime = std::chrono::high_resolution_clock::now();
 
 	bool framebufferResized = false;
@@ -268,7 +289,18 @@ class HelloTriangleApplication
 		tankFirstIndex = groundIndexCount;
 		tankIndexCount = static_cast<uint32_t>(tankMesh.indices.size());
 
-		if (sceneVertices.empty() || sceneIndices.empty() || groundIndexCount == 0 || tankIndexCount == 0)
+		const BulletMeshData bulletMesh = loadBulletMesh(resolveResourcePath("models/9mm_bullet/scene.gltf"),
+		                                                 {.desiredLength = BULLET_DESIRED_LENGTH});
+		bulletFirstIndex = static_cast<uint32_t>(sceneIndices.size());
+		appendMeshToScene(sceneVertices,
+		                  sceneIndices,
+		                  bulletMesh.positions,
+		                  bulletMesh.texCoords,
+		                  bulletMesh.indices,
+		                  bulletMesh.color);
+		bulletIndexCount = static_cast<uint32_t>(bulletMesh.indices.size());
+
+		if (sceneVertices.empty() || sceneIndices.empty() || groundIndexCount == 0 || tankIndexCount == 0 || bulletIndexCount == 0)
 		{
 			throw std::runtime_error("Scene geometry is empty.");
 		}
@@ -284,6 +316,19 @@ class HelloTriangleApplication
 			float deltaTimeSeconds = std::chrono::duration<float>(currentFrameTime - lastFrameTime).count();
 			lastFrameTime = currentFrameTime;
 			tankController.update(window, deltaTimeSeconds);
+
+			// Fire a bullet on the rising edge of Space (one shot per press).
+			const bool spaceIsPressed = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+			if (spaceIsPressed && !spaceWasPressed)
+			{
+				const glm::vec3 forward = tankController.getForward();
+				glm::vec3       muzzle  = tankController.getPosition() + forward * BULLET_MUZZLE_OFFSET;
+				muzzle.z                = BULLET_SPAWN_HEIGHT;
+				bulletSystem.fire(muzzle, forward, BULLET_SPEED);
+			}
+			spaceWasPressed = spaceIsPressed;
+
+			bulletSystem.update(deltaTimeSeconds);
 
 			// Frame-rate independent smoothing toward the tank.
 			const float cameraInterpolation = 1.0f - std::exp(-CAMERA_FOLLOW_RATE * deltaTimeSeconds);
@@ -594,12 +639,14 @@ class HelloTriangleApplication
 	{
 		createTextureImageFromPath(GROUND_TEXTURE_PATH, groundTextureImage, groundTextureImageMemory);
 		createTextureImageFromPath(TANK_TEXTURE_PATH, tankTextureImage, tankTextureImageMemory);
+		createTextureImageFromPath(BULLET_TEXTURE_PATH, bulletTextureImage, bulletTextureImageMemory);
 	}
 
 	void createTextureImageViews()
 	{
 		groundTextureImageView = createImageView(*groundTextureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
 		tankTextureImageView   = createImageView(*tankTextureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
+		bulletTextureImageView = createImageView(*bulletTextureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
 	}
 
 	void createTextureSampler()
@@ -751,6 +798,9 @@ class HelloTriangleApplication
 		tankUniformBuffers.clear();
 		tankUniformBuffersMemory.clear();
 		tankUniformBuffersMapped.clear();
+		bulletUniformBuffers.clear();
+		bulletUniformBuffersMemory.clear();
+		bulletUniformBuffersMapped.clear();
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		{
@@ -766,12 +816,21 @@ class HelloTriangleApplication
 			tankUniformBuffers.emplace_back(std::move(tankBuffer));
 			tankUniformBuffersMemory.emplace_back(std::move(tankBufferMem));
 			tankUniformBuffersMapped.emplace_back(tankUniformBuffersMemory.back().mapMemory(0, bufferSize));
+
+			for (size_t b = 0; b < static_cast<size_t>(MAX_BULLETS); ++b)
+			{
+				auto [bulletBuffer, bulletBufferMem] = createBuffer(
+				    bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+				bulletUniformBuffers.emplace_back(std::move(bulletBuffer));
+				bulletUniformBuffersMemory.emplace_back(std::move(bulletBufferMem));
+				bulletUniformBuffersMapped.emplace_back(bulletUniformBuffersMemory.back().mapMemory(0, bufferSize));
+			}
 		}
 	}
 
 	void createDescriptorPool()
 	{
-		constexpr uint32_t descriptorSetCount = MAX_FRAMES_IN_FLIGHT * 2;
+		constexpr uint32_t descriptorSetCount = MAX_FRAMES_IN_FLIGHT * (2 + MAX_BULLETS);
 		std::array<vk::DescriptorPoolSize, 2> poolSize{{{.type = vk::DescriptorType::eUniformBuffer, .descriptorCount = descriptorSetCount},
 		                                                {.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = descriptorSetCount}}};
 		vk::DescriptorPoolCreateInfo          poolInfo{.flags         = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
@@ -783,7 +842,7 @@ class HelloTriangleApplication
 
 	void createDescriptorSets()
 	{
-		std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT * 2, descriptorSetLayout);
+		std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT * (2 + MAX_BULLETS), descriptorSetLayout);
 		vk::DescriptorSetAllocateInfo        allocInfo{
 		    .descriptorPool     = descriptorPool,
 		    .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
@@ -791,16 +850,23 @@ class HelloTriangleApplication
 
 		groundDescriptorSets.clear();
 		tankDescriptorSets.clear();
+		bulletDescriptorSets.clear();
 		auto allDescriptorSets = device.allocateDescriptorSets(allocInfo);
 		groundDescriptorSets.reserve(MAX_FRAMES_IN_FLIGHT);
 		tankDescriptorSets.reserve(MAX_FRAMES_IN_FLIGHT);
+		bulletDescriptorSets.reserve(MAX_FRAMES_IN_FLIGHT * MAX_BULLETS);
+		size_t nextSet = 0;
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 		{
-			groundDescriptorSets.push_back(std::move(allDescriptorSets[i]));
+			groundDescriptorSets.push_back(std::move(allDescriptorSets[nextSet++]));
 		}
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 		{
-			tankDescriptorSets.push_back(std::move(allDescriptorSets[MAX_FRAMES_IN_FLIGHT + i]));
+			tankDescriptorSets.push_back(std::move(allDescriptorSets[nextSet++]));
+		}
+		for (size_t i = 0; i < static_cast<size_t>(MAX_FRAMES_IN_FLIGHT) * MAX_BULLETS; ++i)
+		{
+			bulletDescriptorSets.push_back(std::move(allDescriptorSets[nextSet++]));
 		}
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -836,6 +902,30 @@ class HelloTriangleApplication
 			     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
 			     .pImageInfo      = &tankImageInfo}}};
 			device.updateDescriptorSets(descriptorWrites, {});
+		}
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		{
+			vk::DescriptorImageInfo bulletImageInfo{.sampler = textureSampler, .imageView = bulletTextureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+			for (size_t b = 0; b < static_cast<size_t>(MAX_BULLETS); ++b)
+			{
+				const size_t            slot = i * MAX_BULLETS + b;
+				vk::DescriptorBufferInfo bulletBufferInfo{.buffer = bulletUniformBuffers[slot], .offset = 0, .range = sizeof(UniformBufferObject)};
+				std::array<vk::WriteDescriptorSet, 2> bulletWrites{{
+				    {.dstSet          = bulletDescriptorSets[slot],
+				     .dstBinding      = 0,
+				     .dstArrayElement = 0,
+				     .descriptorCount = 1,
+				     .descriptorType  = vk::DescriptorType::eUniformBuffer,
+				     .pBufferInfo     = &bulletBufferInfo},
+				    {.dstSet          = bulletDescriptorSets[slot],
+				     .dstBinding      = 1,
+				     .dstArrayElement = 0,
+				     .descriptorCount = 1,
+				     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
+				     .pImageInfo      = &bulletImageInfo}}};
+				device.updateDescriptorSets(bulletWrites, {});
+			}
 		}
 	}
 
@@ -953,6 +1043,13 @@ class HelloTriangleApplication
 
 		commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *tankDescriptorSets[frameIndex], nullptr);
 		commandBuffer.drawIndexed(tankIndexCount, 1, tankFirstIndex, 0, 0);
+
+		const size_t activeBullets = std::min(bulletSystem.getBullets().size(), static_cast<size_t>(MAX_BULLETS));
+		for (size_t b = 0; b < activeBullets; ++b)
+		{
+			commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *bulletDescriptorSets[frameIndex * MAX_BULLETS + b], nullptr);
+			commandBuffer.drawIndexed(bulletIndexCount, 1, bulletFirstIndex, 0, 0);
+		}
 		commandBuffer.endRendering();
 
 		// After rendering, transition the swapchain image to vk::ImageLayout::ePresentSrcKHR
@@ -1035,6 +1132,16 @@ class HelloTriangleApplication
 
 		memcpy(groundUniformBuffersMapped[currentImage], &groundUbo, sizeof(groundUbo));
 		memcpy(tankUniformBuffersMapped[currentImage], &tankUbo, sizeof(tankUbo));
+
+		const std::vector<Bullet> &bullets = bulletSystem.getBullets();
+		for (size_t b = 0; b < bullets.size() && b < static_cast<size_t>(MAX_BULLETS); ++b)
+		{
+			UniformBufferObject bulletUbo{};
+			bulletUbo.model = bullets[b].getModelMatrix();
+			bulletUbo.view  = groundUbo.view;
+			bulletUbo.proj  = groundUbo.proj;
+			memcpy(bulletUniformBuffersMapped[currentImage * MAX_BULLETS + b], &bulletUbo, sizeof(bulletUbo));
+		}
 	}
 
 	void drawFrame()

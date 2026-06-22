@@ -91,3 +91,8 @@ glm::vec3 TankController::getPosition() const
 {
     return position;
 }
+
+glm::vec3 TankController::getForward() const
+{
+    return {-std::sin(yawRadians), std::cos(yawRadians), 0.0f};
+}
