@@ -1,4 +1,4 @@
-#include "bullet.h"
+#include "crate.h"
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +19,11 @@
 
 namespace
 {
+constexpr float HOVER_BASE_HEIGHT = 0.7f;
+constexpr float HOVER_AMPLITUDE   = 0.25f;
+constexpr float HOVER_FREQUENCY   = 2.2f;
+constexpr float ROTATION_SPEED    = 1.0f; // radians per second
+
 glm::mat4 toMat4(const std::vector<double> &matrix)
 {
     glm::mat4 transform(1.0f);
@@ -86,7 +91,7 @@ uint32_t readIndex(const tinygltf::Accessor &indexAccessor, const unsigned char 
 }
 }
 
-BulletMeshData loadBulletMesh(const std::string &gltfPath, const BulletMeshConfig &config)
+CrateMeshData loadCrateMesh(const std::string &gltfPath, const CrateMeshConfig &config)
 {
     // glTF is Y-up; rotate to the engine's Z-up convention.
     const glm::mat4 gltfToWorld = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
@@ -99,15 +104,15 @@ BulletMeshData loadBulletMesh(const std::string &gltfPath, const BulletMeshConfi
     const bool loaded = loader.LoadASCIIFromFile(&model, &error, &warning, gltfPath);
     if (!loaded)
     {
-        throw std::runtime_error("Failed to load bullet model: " + gltfPath + " " + error);
+        throw std::runtime_error("Failed to load crate model: " + gltfPath + " " + error);
     }
 
-    BulletMeshData meshData;
+    CrateMeshData meshData;
 
     const int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
     if (sceneIndex < 0 || sceneIndex >= static_cast<int>(model.scenes.size()))
     {
-        throw std::runtime_error("Bullet glTF scene is missing.");
+        throw std::runtime_error("Crate glTF scene is missing.");
     }
 
     std::function<void(int, const glm::mat4 &)> processNode;
@@ -155,7 +160,7 @@ BulletMeshData loadBulletMesh(const std::string &gltfPath, const BulletMeshConfi
 
                 if (positionAccessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT || positionAccessor.type != TINYGLTF_TYPE_VEC3)
                 {
-                    throw std::runtime_error("Bullet glTF POSITION accessor must be float3.");
+                    throw std::runtime_error("Crate glTF POSITION accessor must be float3.");
                 }
 
                 const size_t         positionStride          = positionAccessor.ByteStride(positionView);
@@ -217,7 +222,7 @@ BulletMeshData loadBulletMesh(const std::string &gltfPath, const BulletMeshConfi
 
     if (meshData.positions.empty() || meshData.indices.empty())
     {
-        throw std::runtime_error("Bullet mesh has no drawable triangles.");
+        throw std::runtime_error("Crate mesh has no drawable triangles.");
     }
 
     glm::vec3 minPoint(std::numeric_limits<float>::max());
@@ -230,120 +235,85 @@ BulletMeshData loadBulletMesh(const std::string &gltfPath, const BulletMeshConfi
 
     const glm::vec3 size        = maxPoint - minPoint;
     const float     longestSide = std::max({size.x, size.y, size.z});
-    const float     scale       = (longestSide > 0.0f) ? (config.desiredLength / longestSide) : 1.0f;
+    const float     scale       = (longestSide > 0.0f) ? (config.desiredSize / longestSide) : 1.0f;
     const glm::vec3 center      = (minPoint + maxPoint) * 0.5f;
 
+    // Center fully at the origin so the crate spins about its own middle.
     for (glm::vec3 &position : meshData.positions)
     {
         position = (position - center) * scale;
     }
 
-    // Lay the bullet down so its longest axis runs along +Y (the forward axis).
-    // If the longest extent is vertical (Z) tip it forward; if it runs along X
-    // spin it a quarter turn around Z.
-    if (size.z >= size.x && size.z >= size.y)
-    {
-        const glm::mat4 layDown = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-        for (glm::vec3 &position : meshData.positions)
-        {
-            position = glm::vec3(layDown * glm::vec4(position, 1.0f));
-        }
-    }
-    else if (size.x > size.y)
-    {
-        const glm::mat4 spin = glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-        for (glm::vec3 &position : meshData.positions)
-        {
-            position = glm::vec3(spin * glm::vec4(position, 1.0f));
-        }
-    }
-
     return meshData;
 }
 
-Bullet::Bullet(const glm::vec3 &spawnPosition, const glm::vec3 &direction, float speed)
-    : position(spawnPosition),
-      speed(speed)
+Crate::Crate(const glm::vec3 &groundPosition, float initialPhase)
+    : position(groundPosition),
+      animationTime(initialPhase)
 {
-    glm::vec3 flat = glm::vec3(direction.x, direction.y, 0.0f);
-    const float length = glm::length(flat);
-    if (length > 1e-5f)
-    {
-        flat /= length;
-    }
-    else
-    {
-        flat = glm::vec3(0.0f, 1.0f, 0.0f);
-    }
-    this->direction = flat;
-
-    // Mesh forward is +Y, so rotate(yaw, +Z) applied to +Y must yield direction:
-    // (-sin yaw, cos yaw) = (dir.x, dir.y).
-    yawRadians = std::atan2(-flat.x, flat.y);
 }
 
-void Bullet::update(float deltaTimeSeconds)
+void Crate::update(float deltaTimeSeconds)
 {
-    const float step = speed * deltaTimeSeconds;
-    position += direction * step;
-    distanceTravelled += step;
+    animationTime += deltaTimeSeconds;
 }
 
-glm::mat4 Bullet::getModelMatrix() const
+glm::mat4 Crate::getModelMatrix() const
 {
+    const float hover = HOVER_BASE_HEIGHT + HOVER_AMPLITUDE * std::sin(animationTime * HOVER_FREQUENCY);
+    const float yaw   = animationTime * ROTATION_SPEED;
+
     glm::mat4 model(1.0f);
-    model = glm::translate(model, position);
-    model = glm::rotate(model, yawRadians, glm::vec3(0.0f, 0.0f, 1.0f));
+    model = glm::translate(model, position + glm::vec3(0.0f, 0.0f, hover));
+    model = glm::rotate(model, yaw, glm::vec3(0.0f, 0.0f, 1.0f));
     return model;
 }
 
-BulletSystem::BulletSystem(std::size_t maxBullets, float mapHalfExtent, float maxRange)
-    : maxBullets(maxBullets),
+CrateSystem::CrateSystem(std::size_t maxCrates, float spawnIntervalSeconds, float mapHalfExtent, float spawnMargin)
+    : maxCrates(maxCrates),
+      spawnInterval(spawnIntervalSeconds),
       mapHalfExtent(mapHalfExtent),
-      maxRange(maxRange)
+      spawnMargin(spawnMargin),
+      rng(std::random_device{}()),
+      coordDist(-(mapHalfExtent - spawnMargin), mapHalfExtent - spawnMargin)
 {
-    bullets.reserve(maxBullets);
+    crates.reserve(maxCrates);
 }
 
-bool BulletSystem::fire(const glm::vec3 &spawnPosition, const glm::vec3 &direction, float speed)
+void CrateSystem::update(float deltaTimeSeconds)
 {
-    if (bullets.size() >= maxBullets)
+    for (Crate &crate : crates)
     {
-        return false;
-    }
-    bullets.emplace_back(spawnPosition, direction, speed);
-    return true;
-}
-
-void BulletSystem::update(float deltaTimeSeconds)
-{
-    for (Bullet &bullet : bullets)
-    {
-        bullet.update(deltaTimeSeconds);
+        crate.update(deltaTimeSeconds);
     }
 
-    const float bound = mapHalfExtent;
-    bullets.erase(
-        std::remove_if(bullets.begin(), bullets.end(),
-                       [&](const Bullet &bullet)
-                       {
-                           const glm::vec3 &p = bullet.getPosition();
-                           const bool outOfMap = std::abs(p.x) > bound || std::abs(p.y) > bound;
-                           const bool tooFar   = bullet.getDistanceTravelled() > maxRange;
-                           return outOfMap || tooFar;
-                       }),
-        bullets.end());
+    spawnTimer += deltaTimeSeconds;
+    if (spawnTimer >= spawnInterval)
+    {
+        spawnTimer -= spawnInterval;
+        if (crates.size() < maxCrates)
+        {
+            spawnCrate();
+        }
+    }
 }
 
-void BulletSystem::removeAt(std::vector<std::size_t> indices)
+void CrateSystem::spawnCrate()
+{
+    std::uniform_real_distribution<float> phaseDist(0.0f, 6.28318530718f);
+    const glm::vec3                       groundPosition(coordDist(rng), coordDist(rng), 0.0f);
+    crates.emplace_back(groundPosition, phaseDist(rng));
+}
+
+void CrateSystem::removeAt(std::vector<std::size_t> indices)
 {
     std::sort(indices.begin(), indices.end());
     indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
     for (auto it = indices.rbegin(); it != indices.rend(); ++it)
     {
-        if (*it < bullets.size())
+        if (*it < crates.size())
         {
-            bullets.erase(bullets.begin() + static_cast<std::ptrdiff_t>(*it));
+            crates.erase(crates.begin() + static_cast<std::ptrdiff_t>(*it));
         }
     }
 }

@@ -55,6 +55,9 @@ class BulletSystem
     // Advances every bullet and removes those that left the map or exceeded range.
     void update(float deltaTimeSeconds);
 
+    // Removes the bullets at the given indices (used when they hit a crate).
+    void removeAt(std::vector<std::size_t> indices);
+
     [[nodiscard]] const std::vector<Bullet> &getBullets() const { return bullets; }
 
   private:

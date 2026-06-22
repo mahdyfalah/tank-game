@@ -33,6 +33,7 @@ import vulkan_hpp;
 #include "scene/tank.h"
 #include "scene/tank_controller.h"
 #include "scene/bullet.h"
+#include "scene/crate.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -120,6 +121,14 @@ constexpr float BULLET_SPAWN_HEIGHT   = 0.6f;
 constexpr float BULLET_MUZZLE_OFFSET  = 1.9f;
 constexpr float BULLET_MAX_RANGE      = MAP_HALF_EXTENT * 2.5f;
 
+// Crates / targets.
+constexpr const char *CRATE_TEXTURE_PATH = "models/wooden_crate/textures/Scene_-_Root_baseColor.png";
+constexpr int   MAX_CRATES            = 5;
+constexpr float CRATE_DESIRED_SIZE    = 1.4f;
+constexpr float CRATE_SPAWN_INTERVAL  = 5.0f;
+constexpr float CRATE_SPAWN_MARGIN    = 4.0f;
+constexpr float CRATE_HIT_RADIUS      = 1.1f;
+
 constexpr glm::vec3 CAMERA_POSITION = {18.0f, -18.0f, 18.0f};
 constexpr glm::vec3 CAMERA_TARGET   = {0.0f, 0.0f, 0.0f};
 constexpr glm::vec3 CAMERA_UP       = {0.0f, 0.0f, 1.0f};
@@ -167,6 +176,9 @@ class HelloTriangleApplication
 	vk::raii::Image        bulletTextureImage       = nullptr;
 	vk::raii::DeviceMemory bulletTextureImageMemory = nullptr;
 	vk::raii::ImageView    bulletTextureImageView   = nullptr;
+	vk::raii::Image        crateTextureImage        = nullptr;
+	vk::raii::DeviceMemory crateTextureImageMemory  = nullptr;
+	vk::raii::ImageView    crateTextureImageView    = nullptr;
 	vk::raii::Sampler      textureSampler     = nullptr;
 
 	vk::raii::Buffer       vertexBuffer       = nullptr;
@@ -181,6 +193,8 @@ class HelloTriangleApplication
 	uint32_t              tankIndexCount   = 0;
 	uint32_t              bulletFirstIndex = 0;
 	uint32_t              bulletIndexCount = 0;
+	uint32_t              crateFirstIndex  = 0;
+	uint32_t              crateIndexCount  = 0;
 
 	std::vector<vk::raii::Buffer>       groundUniformBuffers;
 	std::vector<vk::raii::DeviceMemory> groundUniformBuffersMemory;
@@ -196,6 +210,10 @@ class HelloTriangleApplication
 	std::vector<vk::raii::DescriptorSet> groundDescriptorSets;
 	std::vector<vk::raii::DescriptorSet> tankDescriptorSets;
 	std::vector<vk::raii::DescriptorSet> bulletDescriptorSets;
+	std::vector<vk::raii::Buffer>       crateUniformBuffers;
+	std::vector<vk::raii::DeviceMemory> crateUniformBuffersMemory;
+	std::vector<void *>                 crateUniformBuffersMapped;
+	std::vector<vk::raii::DescriptorSet> crateDescriptorSets;
 
 	vk::raii::CommandPool                commandPool = nullptr;
 	std::vector<vk::raii::CommandBuffer> commandBuffers;
@@ -206,6 +224,7 @@ class HelloTriangleApplication
 	uint32_t                         frameIndex = 0;
 	TankController                   tankController{TANK_SPAWN_POSITION, MAP_HALF_EXTENT, TANK_SPAWN_POSITION.z};
 	BulletSystem                     bulletSystem{static_cast<std::size_t>(MAX_BULLETS), MAP_HALF_EXTENT, BULLET_MAX_RANGE};
+	CrateSystem                      crateSystem{static_cast<std::size_t>(MAX_CRATES), CRATE_SPAWN_INTERVAL, MAP_HALF_EXTENT, CRATE_SPAWN_MARGIN};
 	bool                             spaceWasPressed = false;
 	std::chrono::high_resolution_clock::time_point lastFrameTime = std::chrono::high_resolution_clock::now();
 
@@ -300,7 +319,18 @@ class HelloTriangleApplication
 		                  bulletMesh.color);
 		bulletIndexCount = static_cast<uint32_t>(bulletMesh.indices.size());
 
-		if (sceneVertices.empty() || sceneIndices.empty() || groundIndexCount == 0 || tankIndexCount == 0 || bulletIndexCount == 0)
+		const CrateMeshData crateMesh = loadCrateMesh(resolveResourcePath("models/wooden_crate/scene.gltf"),
+		                                              {.desiredSize = CRATE_DESIRED_SIZE});
+		crateFirstIndex = static_cast<uint32_t>(sceneIndices.size());
+		appendMeshToScene(sceneVertices,
+		                  sceneIndices,
+		                  crateMesh.positions,
+		                  crateMesh.texCoords,
+		                  crateMesh.indices,
+		                  crateMesh.color);
+		crateIndexCount = static_cast<uint32_t>(crateMesh.indices.size());
+
+		if (sceneVertices.empty() || sceneIndices.empty() || groundIndexCount == 0 || tankIndexCount == 0 || bulletIndexCount == 0 || crateIndexCount == 0)
 		{
 			throw std::runtime_error("Scene geometry is empty.");
 		}
@@ -329,6 +359,35 @@ class HelloTriangleApplication
 			spaceWasPressed = spaceIsPressed;
 
 			bulletSystem.update(deltaTimeSeconds);
+			crateSystem.update(deltaTimeSeconds);
+
+			// Resolve bullet/crate hits: shooting a crate removes both.
+			{
+				const std::vector<Bullet> &bullets = bulletSystem.getBullets();
+				const std::vector<Crate>  &crates  = crateSystem.getCrates();
+				std::vector<std::size_t>   crateHits;
+				std::vector<std::size_t>   bulletHits;
+				for (std::size_t bi = 0; bi < bullets.size(); ++bi)
+				{
+					for (std::size_t ci = 0; ci < crates.size(); ++ci)
+					{
+						const glm::vec3 &bp    = bullets[bi].getPosition();
+						const glm::vec3 &cp    = crates[ci].getPosition();
+						const float      dx    = bp.x - cp.x;
+						const float      dy    = bp.y - cp.y;
+						if (dx * dx + dy * dy <= CRATE_HIT_RADIUS * CRATE_HIT_RADIUS)
+						{
+							crateHits.push_back(ci);
+							bulletHits.push_back(bi);
+						}
+					}
+				}
+				if (!crateHits.empty())
+				{
+					crateSystem.removeAt(crateHits);
+					bulletSystem.removeAt(bulletHits);
+				}
+			}
 
 			// Frame-rate independent smoothing toward the tank.
 			const float cameraInterpolation = 1.0f - std::exp(-CAMERA_FOLLOW_RATE * deltaTimeSeconds);
@@ -640,6 +699,7 @@ class HelloTriangleApplication
 		createTextureImageFromPath(GROUND_TEXTURE_PATH, groundTextureImage, groundTextureImageMemory);
 		createTextureImageFromPath(TANK_TEXTURE_PATH, tankTextureImage, tankTextureImageMemory);
 		createTextureImageFromPath(BULLET_TEXTURE_PATH, bulletTextureImage, bulletTextureImageMemory);
+		createTextureImageFromPath(CRATE_TEXTURE_PATH, crateTextureImage, crateTextureImageMemory);
 	}
 
 	void createTextureImageViews()
@@ -647,6 +707,7 @@ class HelloTriangleApplication
 		groundTextureImageView = createImageView(*groundTextureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
 		tankTextureImageView   = createImageView(*tankTextureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
 		bulletTextureImageView = createImageView(*bulletTextureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
+		crateTextureImageView  = createImageView(*crateTextureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
 	}
 
 	void createTextureSampler()
@@ -801,6 +862,9 @@ class HelloTriangleApplication
 		bulletUniformBuffers.clear();
 		bulletUniformBuffersMemory.clear();
 		bulletUniformBuffersMapped.clear();
+		crateUniformBuffers.clear();
+		crateUniformBuffersMemory.clear();
+		crateUniformBuffersMapped.clear();
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		{
@@ -825,12 +889,21 @@ class HelloTriangleApplication
 				bulletUniformBuffersMemory.emplace_back(std::move(bulletBufferMem));
 				bulletUniformBuffersMapped.emplace_back(bulletUniformBuffersMemory.back().mapMemory(0, bufferSize));
 			}
+
+			for (size_t c = 0; c < static_cast<size_t>(MAX_CRATES); ++c)
+			{
+				auto [crateBuffer, crateBufferMem] = createBuffer(
+				    bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+				crateUniformBuffers.emplace_back(std::move(crateBuffer));
+				crateUniformBuffersMemory.emplace_back(std::move(crateBufferMem));
+				crateUniformBuffersMapped.emplace_back(crateUniformBuffersMemory.back().mapMemory(0, bufferSize));
+			}
 		}
 	}
 
 	void createDescriptorPool()
 	{
-		constexpr uint32_t descriptorSetCount = MAX_FRAMES_IN_FLIGHT * (2 + MAX_BULLETS);
+		constexpr uint32_t descriptorSetCount = MAX_FRAMES_IN_FLIGHT * (2 + MAX_BULLETS + MAX_CRATES);
 		std::array<vk::DescriptorPoolSize, 2> poolSize{{{.type = vk::DescriptorType::eUniformBuffer, .descriptorCount = descriptorSetCount},
 		                                                {.type = vk::DescriptorType::eCombinedImageSampler, .descriptorCount = descriptorSetCount}}};
 		vk::DescriptorPoolCreateInfo          poolInfo{.flags         = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
@@ -842,7 +915,7 @@ class HelloTriangleApplication
 
 	void createDescriptorSets()
 	{
-		std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT * (2 + MAX_BULLETS), descriptorSetLayout);
+		std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT * (2 + MAX_BULLETS + MAX_CRATES), descriptorSetLayout);
 		vk::DescriptorSetAllocateInfo        allocInfo{
 		    .descriptorPool     = descriptorPool,
 		    .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
@@ -851,10 +924,12 @@ class HelloTriangleApplication
 		groundDescriptorSets.clear();
 		tankDescriptorSets.clear();
 		bulletDescriptorSets.clear();
+		crateDescriptorSets.clear();
 		auto allDescriptorSets = device.allocateDescriptorSets(allocInfo);
 		groundDescriptorSets.reserve(MAX_FRAMES_IN_FLIGHT);
 		tankDescriptorSets.reserve(MAX_FRAMES_IN_FLIGHT);
 		bulletDescriptorSets.reserve(MAX_FRAMES_IN_FLIGHT * MAX_BULLETS);
+		crateDescriptorSets.reserve(MAX_FRAMES_IN_FLIGHT * MAX_CRATES);
 		size_t nextSet = 0;
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 		{
@@ -867,6 +942,10 @@ class HelloTriangleApplication
 		for (size_t i = 0; i < static_cast<size_t>(MAX_FRAMES_IN_FLIGHT) * MAX_BULLETS; ++i)
 		{
 			bulletDescriptorSets.push_back(std::move(allDescriptorSets[nextSet++]));
+		}
+		for (size_t i = 0; i < static_cast<size_t>(MAX_FRAMES_IN_FLIGHT) * MAX_CRATES; ++i)
+		{
+			crateDescriptorSets.push_back(std::move(allDescriptorSets[nextSet++]));
 		}
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -925,6 +1004,30 @@ class HelloTriangleApplication
 				     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
 				     .pImageInfo      = &bulletImageInfo}}};
 				device.updateDescriptorSets(bulletWrites, {});
+			}
+		}
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		{
+			vk::DescriptorImageInfo crateImageInfo{.sampler = textureSampler, .imageView = crateTextureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+			for (size_t c = 0; c < static_cast<size_t>(MAX_CRATES); ++c)
+			{
+				const size_t             slot = i * MAX_CRATES + c;
+				vk::DescriptorBufferInfo crateBufferInfo{.buffer = crateUniformBuffers[slot], .offset = 0, .range = sizeof(UniformBufferObject)};
+				std::array<vk::WriteDescriptorSet, 2> crateWrites{{
+				    {.dstSet          = crateDescriptorSets[slot],
+				     .dstBinding      = 0,
+				     .dstArrayElement = 0,
+				     .descriptorCount = 1,
+				     .descriptorType  = vk::DescriptorType::eUniformBuffer,
+				     .pBufferInfo     = &crateBufferInfo},
+				    {.dstSet          = crateDescriptorSets[slot],
+				     .dstBinding      = 1,
+				     .dstArrayElement = 0,
+				     .descriptorCount = 1,
+				     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
+				     .pImageInfo      = &crateImageInfo}}};
+				device.updateDescriptorSets(crateWrites, {});
 			}
 		}
 	}
@@ -1050,6 +1153,13 @@ class HelloTriangleApplication
 			commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *bulletDescriptorSets[frameIndex * MAX_BULLETS + b], nullptr);
 			commandBuffer.drawIndexed(bulletIndexCount, 1, bulletFirstIndex, 0, 0);
 		}
+
+		const size_t activeCrates = std::min(crateSystem.getCrates().size(), static_cast<size_t>(MAX_CRATES));
+		for (size_t c = 0; c < activeCrates; ++c)
+		{
+			commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *crateDescriptorSets[frameIndex * MAX_CRATES + c], nullptr);
+			commandBuffer.drawIndexed(crateIndexCount, 1, crateFirstIndex, 0, 0);
+		}
 		commandBuffer.endRendering();
 
 		// After rendering, transition the swapchain image to vk::ImageLayout::ePresentSrcKHR
@@ -1141,6 +1251,16 @@ class HelloTriangleApplication
 			bulletUbo.view  = groundUbo.view;
 			bulletUbo.proj  = groundUbo.proj;
 			memcpy(bulletUniformBuffersMapped[currentImage * MAX_BULLETS + b], &bulletUbo, sizeof(bulletUbo));
+		}
+
+		const std::vector<Crate> &crates = crateSystem.getCrates();
+		for (size_t c = 0; c < crates.size() && c < static_cast<size_t>(MAX_CRATES); ++c)
+		{
+			UniformBufferObject crateUbo{};
+			crateUbo.model = crates[c].getModelMatrix();
+			crateUbo.view  = groundUbo.view;
+			crateUbo.proj  = groundUbo.proj;
+			memcpy(crateUniformBuffersMapped[currentImage * MAX_CRATES + c], &crateUbo, sizeof(crateUbo));
 		}
 	}
 

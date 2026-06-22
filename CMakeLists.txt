@@ -95,6 +95,7 @@ add_executable (${PROJECT_NAME}
   src/scene/tank.cpp
   src/scene/tank_controller.cpp
   src/scene/bullet.cpp
+  src/scene/crate.cpp
   src/render/swapchain_bundle.cpp)
 set_target_properties (${PROJECT_NAME} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${APP_OUTPUT_DIR}
@@ -154,4 +155,7 @@ file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/cartoon_tank"
   DESTINATION ${APP_OUTPUT_DIR}/models)
 
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/9mm_bullet"
+  DESTINATION ${APP_OUTPUT_DIR}/models)
+
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/wooden_crate"
   DESTINATION ${APP_OUTPUT_DIR}/models)
