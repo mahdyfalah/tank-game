@@ -86,3 +86,8 @@ glm::mat4 TankController::getModelMatrix() const
     model = glm::rotate(model, yawRadians + pi, glm::vec3(0.0f, 0.0f, 1.0f));
     return model;
 }
+
+glm::vec3 TankController::getPosition() const
+{
+    return position;
+}

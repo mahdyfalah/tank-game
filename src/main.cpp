@@ -2,6 +2,7 @@
 #include <array>
 #include <assert.h>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -97,7 +98,7 @@ static void appendMeshToScene(std::vector<Vertex> &sceneVertices,
 	}
 }
 
-constexpr uint32_t MAP_TILES_PER_SIDE = 30;
+constexpr uint32_t MAP_TILES_PER_SIDE = 100;
 constexpr float    MAP_TILE_SIZE      = 1.0f;
 constexpr float    MAP_UV_PER_TILE    = 1.0f;
 constexpr float    MAP_HALF_EXTENT    = (static_cast<float>(MAP_TILES_PER_SIDE) * MAP_TILE_SIZE) * 0.5f;
@@ -113,7 +114,12 @@ constexpr glm::vec3 CAMERA_POSITION = {18.0f, -18.0f, 18.0f};
 constexpr glm::vec3 CAMERA_TARGET   = {0.0f, 0.0f, 0.0f};
 constexpr glm::vec3 CAMERA_UP       = {0.0f, 0.0f, 1.0f};
 
-const Camera mainCamera(CAMERA_POSITION, CAMERA_TARGET, CAMERA_UP, 25.0f, 0.1f, 100.0f);
+// Offset kept between the camera and the tank it follows (isometric viewpoint).
+constexpr glm::vec3 CAMERA_FOLLOW_OFFSET = CAMERA_POSITION - CAMERA_TARGET;
+// Higher values snap to the tank faster; lower values give a softer trail.
+constexpr float     CAMERA_FOLLOW_RATE   = 5.0f;
+
+Camera mainCamera(CAMERA_POSITION, CAMERA_TARGET, CAMERA_UP, 25.0f, 0.1f, 100.0f);
 
 class HelloTriangleApplication
 {
@@ -278,6 +284,11 @@ class HelloTriangleApplication
 			float deltaTimeSeconds = std::chrono::duration<float>(currentFrameTime - lastFrameTime).count();
 			lastFrameTime = currentFrameTime;
 			tankController.update(window, deltaTimeSeconds);
+
+			// Frame-rate independent smoothing toward the tank.
+			const float cameraInterpolation = 1.0f - std::exp(-CAMERA_FOLLOW_RATE * deltaTimeSeconds);
+			mainCamera.follow(tankController.getPosition(), CAMERA_FOLLOW_OFFSET, cameraInterpolation);
+
 			drawFrame();
 		}
 

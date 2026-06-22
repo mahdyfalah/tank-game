@@ -26,3 +26,10 @@ glm::mat4 Camera::getProjectionMatrix(float aspectRatio) const
 {
     return glm::perspective(glm::radians(fovDegrees), aspectRatio, nearPlane, farPlane);
 }
+
+void Camera::follow(const glm::vec3 &focusPoint, const glm::vec3 &offset, float interpolationFactor)
+{
+    const glm::vec3 desiredPosition = focusPoint + offset;
+    position = glm::mix(position, desiredPosition, interpolationFactor);
+    target   = glm::mix(target, focusPoint, interpolationFactor);
+}

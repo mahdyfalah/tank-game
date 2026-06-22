@@ -15,6 +15,7 @@ class TankController
     void update(GLFWwindow *window, float deltaTimeSeconds);
 
     [[nodiscard]] glm::mat4 getModelMatrix() const;
+    [[nodiscard]] glm::vec3 getPosition() const;
 
   private:
     glm::vec3 position;
