@@ -19,6 +19,14 @@ on top of it: models, a follow camera, input, bullets, crates and a little HUD.
 Destroy as many crates as you can in 45 seconds. The best score is saved to
 `highscore.txt`.
 
+## Download & play (no build needed)
+
+A prebuilt Windows version is committed to the repo under
+[`dist/TankGame/`](dist/TankGame). Download that folder, then just run
+`TankGame.exe` inside it — the needed DLLs, shaders, models and textures are all
+in the folder. You only need a GPU/driver that supports Vulkan (no SDK install
+required to play).
+
 ## Build & run
 
 You need the **Vulkan SDK** (1.4+), **vcpkg** (with `VCPKG_ROOT` set), **CMake 3.29+**

@@ -9,6 +9,11 @@ vcpkg_installed/
 # Compiled shaders / generated SPIR-V
 *.spv
 
+# Prebuilt, downloadable release (kept in git on purpose)
+!dist/
+!dist/**
+!dist/**/*.spv
+
 # CMake bits if configured in-source
 CMakeCache.txt
 CMakeFiles/
