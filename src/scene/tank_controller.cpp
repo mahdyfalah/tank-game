@@ -58,6 +58,38 @@ void TankController::update(GLFWwindow *window, float deltaTimeSeconds)
         turnInput += 1.0f;
     }
 
+    // Gamepad input (overrides/augments keyboard): R2 forward, L2 reverse,
+    // left stick (L3) steers. Triggers report -1 when released, 1 when fully
+    // pressed, so remap them into a 0..1 range first.
+    GLFWgamepadstate gamepad;
+    if (glfwJoystickIsGamepad(GLFW_JOYSTICK_1) &&
+        glfwGetGamepadState(GLFW_JOYSTICK_1, &gamepad))
+    {
+        const float rightTrigger = (gamepad.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] + 1.0f) * 0.5f;
+        const float leftTrigger  = (gamepad.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] + 1.0f) * 0.5f;
+
+        constexpr float triggerDeadzone = 0.1f;
+        if (rightTrigger > triggerDeadzone)
+        {
+            moveInput += rightTrigger;
+        }
+        if (leftTrigger > triggerDeadzone)
+        {
+            moveInput -= leftTrigger;
+        }
+
+        const float stickX = gamepad.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
+        constexpr float stickDeadzone = 0.2f;
+        if (std::fabs(stickX) > stickDeadzone)
+        {
+            // Pushing the stick right turns the tank right (negative yaw).
+            turnInput -= stickX;
+        }
+    }
+
+    moveInput = std::clamp(moveInput, -1.0f, 1.0f);
+    turnInput = std::clamp(turnInput, -1.0f, 1.0f);
+
     yawRadians += turnInput * turnSpeedRadiansPerSecond * dt;
 
     constexpr float twoPi = 6.28318530718f;
@@ -70,10 +102,8 @@ void TankController::update(GLFWwindow *window, float deltaTimeSeconds)
         yawRadians += twoPi;
     }
 
-    // Forward must match the model's facing produced by getModelMatrix().
-    // getModelMatrix() applies rotate(yaw, +Z) to the tank whose model-space
-    // forward is +Y, which yields the world forward below. Using the same
-    // vector here guarantees the tank drives exactly where it points.
+    // Direction the tank is facing (same formula as getModelMatrix uses), so
+    // it drives where it points.
     const glm::vec3 forward = {-std::sin(yawRadians), std::cos(yawRadians), 0.0f};
     const float     speed   = (moveInput >= 0.0f) ? moveSpeedUnitsPerSecond : reverseSpeedUnitsPerSecond;
     position += forward * (moveInput * speed * dt);
@@ -87,8 +117,8 @@ void TankController::update(GLFWwindow *window, float deltaTimeSeconds)
 
 glm::mat4 TankController::getModelMatrix() const
 {
-    // The tank model's natural facing is opposite of +Y, so add a half turn
-    // to make its visible front line up with the movement direction.
+    // The model faces backwards by default, so add half a turn (pi) to make its
+    // front line up with the driving direction.
     constexpr float pi = 3.14159265359f;
     glm::mat4       model(1.0f);
     model = glm::translate(model, position);

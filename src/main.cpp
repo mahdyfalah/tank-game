@@ -128,13 +128,13 @@ constexpr float BULLET_MAX_RANGE      = MAP_HALF_EXTENT * 2.5f;
 
 // Crates / targets.
 constexpr const char *CRATE_TEXTURE_PATH = "models/wooden_crate/textures/Scene_-_Root_baseColor.png";
-constexpr int   MAX_CRATES            = 5;
+constexpr int   MAX_CRATES            = 10;
 constexpr float CRATE_DESIRED_SIZE    = 1.4f;
-constexpr float CRATE_SPAWN_INTERVAL  = 5.0f;
+constexpr float CRATE_SPAWN_INTERVAL  = 2.5f;
 constexpr float CRATE_SPAWN_MARGIN    = 4.0f;
 constexpr float CRATE_HIT_RADIUS      = 1.1f;
 
-constexpr glm::vec3 CAMERA_POSITION = {18.0f, -18.0f, 18.0f};
+constexpr glm::vec3 CAMERA_POSITION = {28.0f, -28.0f, 28.0f};
 constexpr glm::vec3 CAMERA_TARGET   = {0.0f, 0.0f, 0.0f};
 constexpr glm::vec3 CAMERA_UP       = {0.0f, 0.0f, 1.0f};
 
@@ -415,7 +415,15 @@ class HelloTriangleApplication
 			game.buildUi(static_cast<float>(extent.width), static_cast<float>(extent.height));
 
 			// Enter also starts / restarts the round (rising edge).
-			const bool enterIsPressed = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
+			GLFWgamepadstate gamepadState;
+			const bool       hasGamepad =
+			    glfwJoystickIsGamepad(GLFW_JOYSTICK_1) &&
+			    glfwGetGamepadState(GLFW_JOYSTICK_1, &gamepadState);
+			const bool gamepadStartPressed =
+			    hasGamepad && (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS ||
+			                   gamepadState.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS);
+			const bool enterIsPressed =
+			    glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS || gamepadStartPressed;
 			if (enterIsPressed && !enterWasPressed && !game.isPlaying())
 			{
 				game.start();
@@ -432,8 +440,11 @@ class HelloTriangleApplication
 			{
 				tankController.update(window, deltaTimeSeconds);
 
-				// Fire a bullet on the rising edge of Space (one shot per press).
-				const bool spaceIsPressed = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+				// Fire a bullet on the rising edge of Space / gamepad A (one shot per press).
+				const bool gamepadFirePressed =
+				    hasGamepad && gamepadState.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS;
+				const bool spaceIsPressed =
+				    glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS || gamepadFirePressed;
 				if (spaceIsPressed && !spaceWasPressed)
 				{
 					const glm::vec3 forward = tankController.getForward();

@@ -322,4 +322,11 @@ void CrateSystem::reset()
 {
     crates.clear();
     spawnTimer = 0.0f;
+
+    // Start each round with a handful of crates already on the map.
+    const std::size_t initialCrates = std::min<std::size_t>(5, maxCrates);
+    for (std::size_t i = 0; i < initialCrates; ++i)
+    {
+        spawnCrate();
+    }
 }

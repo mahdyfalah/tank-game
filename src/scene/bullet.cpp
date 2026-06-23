@@ -277,8 +277,7 @@ Bullet::Bullet(const glm::vec3 &spawnPosition, const glm::vec3 &direction, float
     }
     this->direction = flat;
 
-    // Mesh forward is +Y, so rotate(yaw, +Z) applied to +Y must yield direction:
-    // (-sin yaw, cos yaw) = (dir.x, dir.y).
+    // Rotate the bullet (which points +Y) to face its travel direction.
     yawRadians = std::atan2(-flat.x, flat.y);
 }
 

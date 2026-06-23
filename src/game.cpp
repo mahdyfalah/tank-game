@@ -95,6 +95,7 @@ void Game::buildUi(float windowWidth, float windowHeight)
 			ImGui::Text("TANK CRATE SHOOTER");
 			ImGui::Separator();
 			ImGui::Text("Drive with the arrow keys, shoot with Space.");
+			ImGui::Text("Controller: R2 forward, L2 reverse, left stick steers, A shoots.");
 			ImGui::Text("Destroy as many crates as you can in %.0f seconds!", roundSeconds);
 			ImGui::Spacing();
 			if (ImGui::Button("Start  (Enter)", ImVec2(220.0f, 44.0f)))

@@ -1,60 +1,34 @@
-# Tank Game — Vulkan base project
+# Tank Game
 
-A small, **self-contained Vulkan starter project**. Right now it just renders the
-simple base scene (two spinning, textured quads with depth testing) so you have a
-known-good window + render loop to build on. The plan is to grow this into a simple
-driving **tank game** with shooting at randomly generated targets — but none of that
-game logic exists yet.
+A small 3D tank game I made for the Real-time Computer Graphics course. You drive a
+tank around a grassy map and shoot floating crates to score points before the timer
+runs out.
 
-This folder is intentionally independent of the surrounding tutorial repo: it has its
-own `CMakeLists.txt`, its own CMake find-modules (`cmake/`), its own shader and asset,
-and its own `vcpkg.json`. You can copy/move the whole `tank-game/` folder somewhere
-else and it will still build.
+The rendering code started from the [Vulkan Tutorial](https://docs.vulkan.org/tutorial/latest/)
+(the depth-buffering chapter, which is the first point where you have a real 3D scene
+with a camera, depth testing and textures). I took that as a base and built the game
+on top of it: models, a follow camera, input, bullets, crates and a little HUD.
 
-## What it does today
+## How to play
 
-- Creates a GLFW window and a Vulkan instance (validation layers on in Debug builds).
-- Sets up a swap chain with depth buffering and **dynamic rendering** (no render passes).
-- Draws geometry with a perspective camera, an MVP uniform buffer, and a sampled texture.
-- Handles window resize / swap-chain recreation.
+- **Arrow keys** — drive (up/down) and steer (left/right)
+- **Space** — shoot
+- **Enter** — start / restart a round
+- **Controller** — R2 forward, L2 reverse, left stick steers, A shoots
 
-The renderer is based on the tutorial's depth-buffering chapter because it is the
-simplest *complete 3D* setup (camera + depth + textures) — a good foundation for a game.
-
-## Prerequisites
-
-1. **Vulkan SDK 1.4.335 or newer** — https://vulkan.lunarg.com/
-   Provides the Vulkan loader, validation layers, the `vulkan_raii.hpp` header, and the
-   `slangc` shader compiler. Make sure the `VULKAN_SDK` environment variable is set
-   (the SDK installer does this on Windows).
-2. **vcpkg** — https://github.com/microsoft/vcpkg
-   Used in *manifest mode*: the libraries in `vcpkg.json` are installed automatically the
-   first time CMake configures the project. Set the `VCPKG_ROOT` environment variable to
-   your vcpkg checkout.
-3. **CMake 3.29+** and a **C++20** compiler (MSVC 2022, recent Clang, or GCC 13+).
+Destroy as many crates as you can in 45 seconds. The best score is saved to
+`highscore.txt`.
 
 ## Build & run
+
+You need the **Vulkan SDK** (1.4+), **vcpkg** (with `VCPKG_ROOT` set), **CMake 3.29+**
+and a **C++20** compiler.
 
 ### Windows (PowerShell)
 
 ```powershell
-# from the tank-game folder
-./scripts/build_windows.ps1            # configure + build (Debug)
-./scripts/build_windows.ps1 -Run       # build, then run
-./scripts/build_windows.ps1 -Config Release -Run
+./scripts/build_windows.ps1 -Run
 ```
-
-The script auto-detects vcpkg from `VCPKG_ROOT`, then `C:\vcpkg`. The first configure
-will take a while because vcpkg builds the dependencies.
-
-Optionally, pre-install the dependencies (and warm the vcpkg binary cache) up-front:
-
-```bat
-scripts\install_dependencies_windows.bat
-```
-
-This is not required — the `vcpkg.json` manifest makes CMake install everything on the
-first configure — but it makes that first configure fast.
 
 ### Linux / macOS
 
@@ -63,64 +37,69 @@ chmod +x scripts/build_unix.sh   # first time only
 ./scripts/build_unix.sh --run
 ```
 
-> macOS note: Vulkan runs on top of MoltenVK (included in the Vulkan SDK). It works, but
-> the project is primarily developed and tested on Windows.
+The first build is slow because vcpkg compiles the dependencies. The game must be run
+from its output folder so it can find the `shaders/`, `models/` and `textures/` folders
+next to the executable (the build scripts already do this).
 
-### Manual CMake (any platform)
+## How the code is organized
 
-```bash
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-cmake --build build --config Debug --target TankGame
-# run from the output dir so shaders/ and textures/ resolve:
-cd build/TankGame && ./TankGame      # Windows: .\Debug\TankGame.exe
-```
+`src/main.cpp` is the big file: it does all the Vulkan setup and the main loop. The
+rest of the game is split into small classes so `main.cpp` doesn't have to know the
+details:
 
-## Project layout
+| Class | File | What it does |
+|-------|------|--------------|
+| `Camera` | `camera.*` | Builds the view and projection matrices and smoothly follows the tank. |
+| `GroundTileMap` | `ground_tile_map.*` | Builds the flat ground as a grid of tiles with a tiled grass texture. |
+| `Tank` | `scene/tank.*` | Loads the tank model (`.gltf`) and gives back its mesh. |
+| `TankController` | `scene/tank_controller.*` | Reads keyboard/controller input and moves the tank (position + rotation). |
+| `Bullet` / `BulletSystem` | `scene/bullet.*` | A bullet flying forward; the system spawns them, moves them and deletes ones that fly too far. |
+| `Crate` / `CrateSystem` | `scene/crate.*` | A floating, spinning crate; the system spawns them over time and removes the ones that get shot. |
+| `Game` | `game.*` | The round logic: countdown, score, best score and the ImGui menus/HUD. |
 
-```
-tank-game/
-├─ CMakeLists.txt        # self-contained build (single TankGame executable)
-├─ vcpkg.json            # dependency manifest (auto-installed by vcpkg)
-├─ cmake/                # bundled Find*.cmake helpers (keeps the project portable)
-├─ src/
-│  └─ main.cpp           # the whole renderer (single file for now)
-├─ shaders/
-│  └─ shader.slang       # Slang vertex + fragment shaders -> compiled to slang.spv
-└─ assets/
-│  └─ textures/
-│     └─ grass.jpg       # the sample texture
-└─ scripts/
-   ├─ build_windows.ps1
-   ├─ build_unix.sh
-   └─ install_dependencies_windows.bat
-```
+The general idea: every frame `main.cpp` reads input, updates the tank, bullets and
+crates, checks if any bullet hit a crate (a simple distance check), moves the camera,
+and then records the Vulkan commands to draw everything.
 
-At runtime the executable expects `shaders/slang.spv` and `textures/grass.jpg`
-**relative to its working directory**. CMake puts both in `build/TankGame/`, and the
-build scripts run the game from there.
+## Some Vulkan ideas used here
 
-## Dependencies (via vcpkg)
+Vulkan is very explicit — you have to set up almost everything yourself. The main
+pieces from the tutorial that this game uses:
 
-| Package          | Used for                                   | Used yet? |
-|------------------|--------------------------------------------|-----------|
-| `glfw3`          | window + input                             | yes       |
-| `glm`            | vectors / matrices                         | yes       |
-| `stb`            | loading the `.jpg` texture                 | yes       |
-| `tinyobjloader`  | `.obj` model loading                       | ready     |
-| `tinygltf`       | `.gltf` / `.glb` model loading             | ready     |
-| `ktx[vulkan]`    | `.ktx2` compressed textures                | ready     |
-| `nlohmann-json`  | JSON (levels / config)                     | ready     |
-| `openal-soft`    | audio (engine sounds, shots)               | ready     |
+- **Instance & device** — the connection to the Vulkan library and the GPU we picked.
+- **Swap chain** — the set of images we draw into and then show on screen. It has to be
+  recreated when the window is resized.
+- **Depth buffer** — an extra image storing how far each pixel is, so closer objects
+  correctly cover the ones behind them (needed once you draw real 3D).
+- **Graphics pipeline** — a fixed configuration of the shaders and render settings. Here
+  the vertex and fragment shaders are written in Slang and compiled to SPIR-V.
+- **Uniform buffer (MVP matrix)** — each object sends its `model`, `view` and
+  `projection` matrices to the shader so the GPU knows where to put it on screen. There
+  is one of these per object (tank, ground, each bullet, each crate).
+- **Textures & samplers** — images loaded with `stb_image` and sampled in the fragment
+  shader to color the surfaces (grass, tank, crate, bullet).
+- **Descriptor sets** — the "binding" that tells a shader which uniform buffer and which
+  texture to use for the object being drawn.
+- **Command buffers & frames in flight** — drawing commands are recorded into a command
+  buffer and submitted to the GPU. Two frames are processed at once so the CPU and GPU
+  don't wait on each other.
 
-The "ready" libraries are installed and available so you don't have to touch the
-dependency setup later; only `glfw3`, `glm`, and `stb` are linked into the simple base.
-Wire the others into `target_link_libraries` in `CMakeLists.txt` as you need them.
+## Libraries (via vcpkg)
 
-## Where the game logic will go (later)
+| Library | Used for |
+|---------|----------|
+| `glfw3` | window + keyboard / controller input |
+| `glm` | vectors and matrices |
+| `stb` | loading texture images |
+| `tinygltf` | loading the `.gltf` models (tank, crate, bullet) |
+| `Dear ImGui` | the menus and on-screen score / timer |
 
-This is just the scaffold. When you're ready, likely next steps are:
+## Assets
 
-1. Replace the hardcoded quads with a simple ground plane + a tank mesh.
-2. Add a camera that follows the tank, plus WASD / arrow-key driving input.
-3. Spawn random target objects and add projectile shooting + collision.
-4. Split `main.cpp` into smaller units (renderer, input, game state) as it grows.
+The 3D models in `assets/models/` (tank, crate, bullet) come with their own
+`license.txt` files. The grass texture lives in `assets/textures/`.
+
+## Credits
+
+- Base renderer: [Vulkan Tutorial](https://docs.vulkan.org/tutorial/latest/)
+- Built as a student project for the Real-time Computer Graphics course.
