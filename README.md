@@ -39,17 +39,6 @@ and a **C++20** compiler.
 ./scripts/build_windows.ps1 -Run
 ```
 
-### Linux / macOS
-
-```bash
-chmod +x scripts/build_unix.sh   # first time only
-./scripts/build_unix.sh --run
-```
-
-The first build is slow because vcpkg compiles the dependencies. The game must be run
-from its output folder so it can find the `shaders/`, `models/` and `textures/` folders
-next to the executable (the build scripts already do this).
-
 ## How the code is organized
 
 `src/main.cpp` is the big file: it does all the Vulkan setup and the main loop. The
