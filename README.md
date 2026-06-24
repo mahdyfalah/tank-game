@@ -59,29 +59,6 @@ The general idea: every frame `main.cpp` reads input, updates the tank, bullets 
 crates, checks if any bullet hit a crate (a simple distance check), moves the camera,
 and then records the Vulkan commands to draw everything.
 
-## Some Vulkan ideas used here
-
-Vulkan is very explicit — you have to set up almost everything yourself. The main
-pieces from the tutorial that this game uses:
-
-- **Instance & device** — the connection to the Vulkan library and the GPU we picked.
-- **Swap chain** — the set of images we draw into and then show on screen. It has to be
-  recreated when the window is resized.
-- **Depth buffer** — an extra image storing how far each pixel is, so closer objects
-  correctly cover the ones behind them (needed once you draw real 3D).
-- **Graphics pipeline** — a fixed configuration of the shaders and render settings. Here
-  the vertex and fragment shaders are written in Slang and compiled to SPIR-V.
-- **Uniform buffer (MVP matrix)** — each object sends its `model`, `view` and
-  `projection` matrices to the shader so the GPU knows where to put it on screen. There
-  is one of these per object (tank, ground, each bullet, each crate).
-- **Textures & samplers** — images loaded with `stb_image` and sampled in the fragment
-  shader to color the surfaces (grass, tank, crate, bullet).
-- **Descriptor sets** — the "binding" that tells a shader which uniform buffer and which
-  texture to use for the object being drawn.
-- **Command buffers & frames in flight** — drawing commands are recorded into a command
-  buffer and submitted to the GPU. Two frames are processed at once so the CPU and GPU
-  don't wait on each other.
-
 ## Libraries (via vcpkg)
 
 | Library | Used for |
