@@ -9,6 +9,8 @@ The rendering code started from the [Vulkan Tutorial](https://docs.vulkan.org/tu
 with a camera, depth testing and textures). I took that as a base and built the game
 on top of it: models, a follow camera, input, bullets, crates and a little HUD.
 
+You can find the gameplay video here: https://www.youtube.com/watch?v=_VaOIVv0lWk
+
 ## How to play
 
 - **Arrow keys** — drive (up/down) and steer (left/right)
@@ -110,3 +112,4 @@ The 3D models in `assets/models/` (tank, crate, bullet) come with their own
 ## Credits
 
 - Base renderer: [Vulkan Tutorial](https://docs.vulkan.org/tutorial/latest/)
+- Tutorial Repo: [Vulkan Tutorial Github]https://github.com/KhronosGroup/Vulkan-Tutorial/tree/main
