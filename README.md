@@ -4,12 +4,10 @@ A small 3D tank game I made for the Real-time Computer Graphics course. You driv
 tank around a grassy map and shoot floating crates to score points before the timer
 runs out.
 
-The rendering code started from the [Vulkan Tutorial](https://docs.vulkan.org/tutorial/latest/)
-(the depth-buffering chapter, which is the first point where you have a real 3D scene
-with a camera, depth testing and textures). I took that as a base and built the game
-on top of it: models, a follow camera, input, bullets, crates and a little HUD.
+The Project is based on examples from [Vulkan Tutorial](https://docs.vulkan.org/tutorial/latest/)
 
 You can find the gameplay video here: https://www.youtube.com/watch?v=_VaOIVv0lWk
+
 And my github repo here: https://github.com/mahdyfalah/tank-game
 
 ## How to play
@@ -113,4 +111,4 @@ The 3D models in `assets/models/` (tank, crate, bullet) come with their own
 ## Credits
 
 - Base renderer: [Vulkan Tutorial](https://docs.vulkan.org/tutorial/latest/)
-- Tutorial Repo: [Vulkan Tutorial Github]https://github.com/KhronosGroup/Vulkan-Tutorial/tree/main
+- Tutorial Repo: [Vulkan Tutorial Github](https://github.com/KhronosGroup/Vulkan-Tutorial/tree/main)
