@@ -1,3 +1,20 @@
+// =============================================================================
+// Tank Game - Vulkan renderer + gameplay entry point
+//
+// Built on the modern Vulkan-Tutorial code path (Vulkan 1.3, vulkan_hpp RAII,
+// dynamic rendering - no VkRenderPass). The renderer is closest to tutorial
+// examples 34 (android / multi-object) and 36 (multiple_objects): one shared
+// vertex/index buffer, one graphics pipeline, and a per-object descriptor set
+// chosen at draw time. Texture + sampler code comes from examples 24-26 and depth
+// buffering from 27. Tutorial features we deliberately left out as unneeded: MSAA
+// (30), mipmaps (29), compute (31), Vulkan profiles (33) and the Android layer (34).
+//
+// Models load from glTF (via the scene/* loaders) instead of the tutorial's .obj
+// path: our assets ship as glTF, and glTF bundles geometry + textures + transforms
+// in one file, so we avoid the extra tinyobjloader/material wiring .obj would need.
+// glTF was created by the Khronos Group specifically as a modern runtime format.
+// =============================================================================
+
 #include <algorithm>
 #include <array>
 #include <assert.h>
@@ -19,7 +36,7 @@
 import vulkan_hpp;
 #endif
 
-#define GLFW_INCLUDE_VULKAN        // REQUIRED only for GLFW CreateWindowSurface.
+#define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
 #define GLM_FORCE_RADIANS
@@ -145,7 +162,12 @@ constexpr float     CAMERA_FOLLOW_RATE   = 5.0f;
 
 Camera mainCamera(CAMERA_POSITION, CAMERA_TARGET, CAMERA_UP, 25.0f, 0.1f, 100.0f);
 
-class HelloTriangleApplication
+// Top-level application: owns every Vulkan object (through vk::raii, so handles are
+// destroyed automatically in reverse order) and drives the game loop. The shape of
+// this class follows the Vulkan-Tutorial "HelloTriangleApplication", specialised to
+// the multiple-objects renderer of examples 34/36 and extended with game systems
+// (tank, bullets, crates), a follow camera and an ImGui HUD.
+class TankGame
 {
   public:
 	void run()
@@ -257,10 +279,15 @@ class HelloTriangleApplication
 
 	static void framebufferResizeCallback(GLFWwindow *window, int width, int height)
 	{
-		auto app                = reinterpret_cast<HelloTriangleApplication *>(glfwGetWindowUserPointer(window));
+		auto app                = reinterpret_cast<TankGame *>(glfwGetWindowUserPointer(window));
 		app->framebufferResized = true;
 	}
 
+	// Bring-up sequence taken from the Vulkan-Tutorial RAII branch (examples 27-36):
+	// instance -> device -> swapchain -> pipeline -> resources -> sync objects. We fold
+	// the tutorial's createSwapChain/createImageViews/createDepthResources into
+	// SwapchainBundle, and replace loadModel()/setupGameObjects() with
+	// buildSceneGeometry(). ImGui is initialised last, once the device exists.
 	void initVulkan()
 	{
 		createInstance();
@@ -486,7 +513,6 @@ class HelloTriangleApplication
 					}
 				}
 
-				// Frame-rate independent smoothing toward the tank.
 				const float cameraInterpolation = 1.0f - std::exp(-CAMERA_FOLLOW_RATE * deltaTimeSeconds);
 				mainCamera.follow(tankController.getPosition(), CAMERA_FOLLOW_OFFSET, cameraInterpolation);
 			}
@@ -495,7 +521,6 @@ class HelloTriangleApplication
 				spaceWasPressed = false;
 			}
 
-			// Advance the countdown last so the final frame still renders the world.
 			game.update(deltaTimeSeconds);
 
 			ImGui::Render();
@@ -531,7 +556,7 @@ class HelloTriangleApplication
 
 	void createInstance()
 	{
-		constexpr vk::ApplicationInfo appInfo{.pApplicationName   = "Hello Triangle",
+		constexpr vk::ApplicationInfo appInfo{.pApplicationName   = "Tank Game",
 		                                      .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
 		                                      .pEngineName        = "No Engine",
 		                                      .engineVersion      = VK_MAKE_VERSION(1, 0, 0),
@@ -961,6 +986,29 @@ class HelloTriangleApplication
 		copyBuffer(stagingBuffer, indexBuffer, bufferSize);
 	}
 
+	// Allocates `count` host-visible uniform buffers (one UBO each), appends them to the
+	// given vectors and keeps the memory permanently mapped for cheap per-frame writes.
+	// Same persistently-mapped UBO trick used from example 22 onwards.
+	void appendUniformBuffers(size_t count,
+	                          std::vector<vk::raii::Buffer> &buffers,
+	                          std::vector<vk::raii::DeviceMemory> &memory,
+	                          std::vector<void *> &mapped)
+	{
+		constexpr vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
+		for (size_t i = 0; i < count; ++i)
+		{
+			auto [buffer, bufferMem] = createBuffer(
+			    bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+			buffers.emplace_back(std::move(buffer));
+			memory.emplace_back(std::move(bufferMem));
+			mapped.emplace_back(memory.back().mapMemory(0, bufferSize));
+		}
+	}
+
+	// One UBO per object, per frame in flight. Ground and tank are single objects;
+	// bullets and crates are fixed-size pools (MAX_BULLETS / MAX_CRATES). Buffers are
+	// laid out frame-by-frame so the slot maths in updateUniformBuffer stays simple.
+	// This is the per-object UBO design of examples 34/36, just split into named groups.
 	void createUniformBuffers()
 	{
 		groundUniformBuffers.clear();
@@ -978,36 +1026,10 @@ class HelloTriangleApplication
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		{
-			vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
-			auto [groundBuffer, groundBufferMem]  = createBuffer(
-			    bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-			groundUniformBuffers.emplace_back(std::move(groundBuffer));
-			groundUniformBuffersMemory.emplace_back(std::move(groundBufferMem));
-			groundUniformBuffersMapped.emplace_back(groundUniformBuffersMemory.back().mapMemory(0, bufferSize));
-
-			auto [tankBuffer, tankBufferMem]  = createBuffer(
-			    bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-			tankUniformBuffers.emplace_back(std::move(tankBuffer));
-			tankUniformBuffersMemory.emplace_back(std::move(tankBufferMem));
-			tankUniformBuffersMapped.emplace_back(tankUniformBuffersMemory.back().mapMemory(0, bufferSize));
-
-			for (size_t b = 0; b < static_cast<size_t>(MAX_BULLETS); ++b)
-			{
-				auto [bulletBuffer, bulletBufferMem] = createBuffer(
-				    bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-				bulletUniformBuffers.emplace_back(std::move(bulletBuffer));
-				bulletUniformBuffersMemory.emplace_back(std::move(bulletBufferMem));
-				bulletUniformBuffersMapped.emplace_back(bulletUniformBuffersMemory.back().mapMemory(0, bufferSize));
-			}
-
-			for (size_t c = 0; c < static_cast<size_t>(MAX_CRATES); ++c)
-			{
-				auto [crateBuffer, crateBufferMem] = createBuffer(
-				    bufferSize, vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-				crateUniformBuffers.emplace_back(std::move(crateBuffer));
-				crateUniformBuffersMemory.emplace_back(std::move(crateBufferMem));
-				crateUniformBuffersMapped.emplace_back(crateUniformBuffersMemory.back().mapMemory(0, bufferSize));
-			}
+			appendUniformBuffers(1, groundUniformBuffers, groundUniformBuffersMemory, groundUniformBuffersMapped);
+			appendUniformBuffers(1, tankUniformBuffers, tankUniformBuffersMemory, tankUniformBuffersMapped);
+			appendUniformBuffers(MAX_BULLETS, bulletUniformBuffers, bulletUniformBuffersMemory, bulletUniformBuffersMapped);
+			appendUniformBuffers(MAX_CRATES, crateUniformBuffers, crateUniformBuffersMemory, crateUniformBuffersMapped);
 		}
 	}
 
@@ -1023,6 +1045,34 @@ class HelloTriangleApplication
 		descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
 	}
 
+	// Points one descriptor set at an object's UBO (binding 0) and texture (binding 1).
+	// Every object owns its own set so a single pipeline can draw them all - we just
+	// swap the bound set between draws. This is the per-object descriptor idea of ex.34/36.
+	void writeObjectDescriptorSet(const vk::raii::DescriptorSet &set,
+	                              const vk::raii::Buffer &uniformBuffer,
+	                              const vk::raii::ImageView &imageView)
+	{
+		vk::DescriptorBufferInfo bufferInfo{.buffer = uniformBuffer, .offset = 0, .range = sizeof(UniformBufferObject)};
+		vk::DescriptorImageInfo  imageInfo{.sampler = textureSampler, .imageView = imageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+		std::array<vk::WriteDescriptorSet, 2> writes{{
+		    {.dstSet          = set,
+		     .dstBinding      = 0,
+		     .dstArrayElement = 0,
+		     .descriptorCount = 1,
+		     .descriptorType  = vk::DescriptorType::eUniformBuffer,
+		     .pBufferInfo     = &bufferInfo},
+		    {.dstSet          = set,
+		     .dstBinding      = 1,
+		     .dstArrayElement = 0,
+		     .descriptorCount = 1,
+		     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
+		     .pImageInfo      = &imageInfo}}};
+		device.updateDescriptorSets(writes, {});
+	}
+
+	// Allocates all descriptor sets up front (ground, tank, bullet pool, crate pool)
+	// from one pool, then wires each to its UBO + texture. Same idea as the tutorial's
+	// createDescriptorSets (ex.34/36), extended to several object groups instead of one.
 	void createDescriptorSets()
 	{
 		std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT * (2 + MAX_BULLETS + MAX_CRATES), descriptorSetLayout);
@@ -1058,86 +1108,23 @@ class HelloTriangleApplication
 			crateDescriptorSets.push_back(std::move(allDescriptorSets[nextSet++]));
 		}
 
+		// Wire every set to its UBO (binding 0) + texture (binding 1). Ground/tank have one
+		// set per frame; bullets/crates have one set per pool slot per frame.
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		{
-			vk::DescriptorBufferInfo groundBufferInfo{.buffer = groundUniformBuffers[i], .offset = 0, .range = sizeof(UniformBufferObject)};
-			vk::DescriptorBufferInfo tankBufferInfo{.buffer = tankUniformBuffers[i], .offset = 0, .range = sizeof(UniformBufferObject)};
-			vk::DescriptorImageInfo  groundImageInfo{.sampler = textureSampler, .imageView = groundTextureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-			vk::DescriptorImageInfo  tankImageInfo{.sampler = textureSampler, .imageView = tankTextureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+			writeObjectDescriptorSet(groundDescriptorSets[i], groundUniformBuffers[i], groundTextureImageView);
+			writeObjectDescriptorSet(tankDescriptorSets[i], tankUniformBuffers[i], tankTextureImageView);
 
-			std::array<vk::WriteDescriptorSet, 4> descriptorWrites{{
-			    {.dstSet          = groundDescriptorSets[i],
-			     .dstBinding      = 0,
-			     .dstArrayElement = 0,
-			     .descriptorCount = 1,
-			     .descriptorType  = vk::DescriptorType::eUniformBuffer,
-			     .pBufferInfo     = &groundBufferInfo},
-			    {.dstSet          = groundDescriptorSets[i],
-			     .dstBinding      = 1,
-			     .dstArrayElement = 0,
-			     .descriptorCount = 1,
-			     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
-			     .pImageInfo      = &groundImageInfo},
-			    {.dstSet          = tankDescriptorSets[i],
-			     .dstBinding      = 0,
-			     .dstArrayElement = 0,
-			     .descriptorCount = 1,
-			     .descriptorType  = vk::DescriptorType::eUniformBuffer,
-			     .pBufferInfo     = &tankBufferInfo},
-			    {.dstSet          = tankDescriptorSets[i],
-			     .dstBinding      = 1,
-			     .dstArrayElement = 0,
-			     .descriptorCount = 1,
-			     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
-			     .pImageInfo      = &tankImageInfo}}};
-			device.updateDescriptorSets(descriptorWrites, {});
-		}
-
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-		{
-			vk::DescriptorImageInfo bulletImageInfo{.sampler = textureSampler, .imageView = bulletTextureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
 			for (size_t b = 0; b < static_cast<size_t>(MAX_BULLETS); ++b)
 			{
-				const size_t            slot = i * MAX_BULLETS + b;
-				vk::DescriptorBufferInfo bulletBufferInfo{.buffer = bulletUniformBuffers[slot], .offset = 0, .range = sizeof(UniformBufferObject)};
-				std::array<vk::WriteDescriptorSet, 2> bulletWrites{{
-				    {.dstSet          = bulletDescriptorSets[slot],
-				     .dstBinding      = 0,
-				     .dstArrayElement = 0,
-				     .descriptorCount = 1,
-				     .descriptorType  = vk::DescriptorType::eUniformBuffer,
-				     .pBufferInfo     = &bulletBufferInfo},
-				    {.dstSet          = bulletDescriptorSets[slot],
-				     .dstBinding      = 1,
-				     .dstArrayElement = 0,
-				     .descriptorCount = 1,
-				     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
-				     .pImageInfo      = &bulletImageInfo}}};
-				device.updateDescriptorSets(bulletWrites, {});
+				const size_t slot = i * MAX_BULLETS + b;
+				writeObjectDescriptorSet(bulletDescriptorSets[slot], bulletUniformBuffers[slot], bulletTextureImageView);
 			}
-		}
 
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-		{
-			vk::DescriptorImageInfo crateImageInfo{.sampler = textureSampler, .imageView = crateTextureImageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
 			for (size_t c = 0; c < static_cast<size_t>(MAX_CRATES); ++c)
 			{
-				const size_t             slot = i * MAX_CRATES + c;
-				vk::DescriptorBufferInfo crateBufferInfo{.buffer = crateUniformBuffers[slot], .offset = 0, .range = sizeof(UniformBufferObject)};
-				std::array<vk::WriteDescriptorSet, 2> crateWrites{{
-				    {.dstSet          = crateDescriptorSets[slot],
-				     .dstBinding      = 0,
-				     .dstArrayElement = 0,
-				     .descriptorCount = 1,
-				     .descriptorType  = vk::DescriptorType::eUniformBuffer,
-				     .pBufferInfo     = &crateBufferInfo},
-				    {.dstSet          = crateDescriptorSets[slot],
-				     .dstBinding      = 1,
-				     .dstArrayElement = 0,
-				     .descriptorCount = 1,
-				     .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
-				     .pImageInfo      = &crateImageInfo}}};
-				device.updateDescriptorSets(crateWrites, {});
+				const size_t slot = i * MAX_CRATES + c;
+				writeObjectDescriptorSet(crateDescriptorSets[slot], crateUniformBuffers[slot], crateTextureImageView);
 			}
 		}
 	}
@@ -1191,6 +1178,10 @@ class HelloTriangleApplication
 		commandBuffers = vk::raii::CommandBuffers(device, allocInfo);
 	}
 
+	// Records one frame with dynamic rendering (no VkRenderPass / framebuffer), exactly
+	// like examples 34/36: transition the images, beginRendering, then for each object
+	// bind its descriptor set and drawIndexed its slice of the shared buffers. The ImGui
+	// HUD is drawn last so it sits on top, then the swapchain image goes to present.
 	void recordCommandBuffer(uint32_t imageIndex)
 	{
 		auto &commandBuffer = commandBuffers[frameIndex];
@@ -1291,6 +1282,9 @@ class HelloTriangleApplication
 		commandBuffer.end();
 	}
 
+	// Inserts a pipeline barrier to move an image between layouts. Dynamic rendering has
+	// no render pass to do these transitions for us, so we issue them by hand around
+	// beginRendering - the same helper used throughout examples 27-36.
 	void transition_image_layout(
 	    vk::Image               image,
 	    vk::ImageLayout         old_layout,
@@ -1340,6 +1334,10 @@ class HelloTriangleApplication
 		}
 	}
 
+	// Refreshes every object's UBO for the current frame. view/proj are shared (one
+	// camera) and only the model matrix differs per object - the same split as
+	// updateUniformBuffers() in example 36. proj[1][1] is flipped because Vulkan's
+	// clip-space Y axis points opposite to GLM/OpenGL.
 	void updateUniformBuffer(uint32_t currentImage)
 	{
 		UniformBufferObject groundUbo{};
@@ -1392,15 +1390,13 @@ class HelloTriangleApplication
 
 		auto [result, imageIndex] = swapchainBundle->getSwapChain().acquireNextImage(UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
 
-		// Due to VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS being defined, eErrorOutOfDateKHR can be checked as a result
-		// here and does not need to be caught by an exception.
+		// Window was resized/minimised: the swapchain is stale, rebuild it and skip this frame.
 		if (result == vk::Result::eErrorOutOfDateKHR)
 		{
 			recreateSwapChain();
 			return;
 		}
-		// On other success codes than eSuccess and eSuboptimalKHR we just throw an exception.
-		// On any error code, aquireNextImage already threw an exception.
+		// eSuboptimalKHR is still presentable; anything else here is a genuine error.
 		if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR)
 		{
 			assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
@@ -1430,8 +1426,7 @@ class HelloTriangleApplication
 		                                        .pSwapchains        = &*swapchainBundle->getSwapChain(),
 		                                        .pImageIndices      = &imageIndex};
 		result = queue.presentKHR(presentInfoKHR);
-		// Due to VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS being defined, eErrorOutOfDateKHR can be checked as a result
-		// here and does not need to be caught by an exception.
+		// Rebuild the swapchain if it became out-of-date / suboptimal, or the window resized.
 		if ((result == vk::Result::eSuboptimalKHR) || (result == vk::Result::eErrorOutOfDateKHR) || framebufferResized)
 		{
 			framebufferResized = false;
@@ -1439,7 +1434,6 @@ class HelloTriangleApplication
 		}
 		else
 		{
-			// There are no other success codes than eSuccess; on any error code, presentKHR already threw an exception.
 			assert(result == vk::Result::eSuccess);
 		}
 		frameIndex = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -1513,7 +1507,7 @@ int main()
 {
 	try
 	{
-		HelloTriangleApplication app;
+		TankGame app;
 		app.run();
 	}
 	catch (const std::exception &e)
