@@ -1,18 +1,5 @@
 // =============================================================================
 // Tank Game - Vulkan renderer + gameplay entry point
-//
-// Built on the modern Vulkan-Tutorial code path (Vulkan 1.3, vulkan_hpp RAII,
-// dynamic rendering - no VkRenderPass). The renderer is closest to tutorial
-// examples 34 (android / multi-object) and 36 (multiple_objects): one shared
-// vertex/index buffer, one graphics pipeline, and a per-object descriptor set
-// chosen at draw time. Texture + sampler code comes from examples 24-26 and depth
-// buffering from 27. Tutorial features we deliberately left out as unneeded: MSAA
-// (30), mipmaps (29), compute (31), Vulkan profiles (33) and the Android layer (34).
-//
-// Models load from glTF (via the scene/* loaders) instead of the tutorial's .obj
-// path: our assets ship as glTF, and glTF bundles geometry + textures + transforms
-// in one file, so we avoid the extra tinyobjloader/material wiring .obj would need.
-// glTF was created by the Khronos Group specifically as a modern runtime format.
 // =============================================================================
 
 #include <algorithm>
