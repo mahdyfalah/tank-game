@@ -10,6 +10,7 @@ with a camera, depth testing and textures). I took that as a base and built the 
 on top of it: models, a follow camera, input, bullets, crates and a little HUD.
 
 You can find the gameplay video here: https://www.youtube.com/watch?v=_VaOIVv0lWk
+And my github repo here: https://github.com/mahdyfalah/tank-game
 
 ## How to play
 
