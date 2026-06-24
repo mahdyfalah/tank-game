@@ -110,4 +110,3 @@ The 3D models in `assets/models/` (tank, crate, bullet) come with their own
 ## Credits
 
 - Base renderer: [Vulkan Tutorial](https://docs.vulkan.org/tutorial/latest/)
-- Built as a student project for the Real-time Computer Graphics course.
